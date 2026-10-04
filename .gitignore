@@ -1,0 +1,10 @@
+/.env
+/vendor/
+/storage/imports/*
+!/storage/imports/.gitkeep
+/storage/logs/*
+!/storage/logs/.gitkeep
+/.phpunit.cache/
+*.log
+
+huongDan

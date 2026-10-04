@@ -1,0 +1,17 @@
+{
+  "name": "ntu-cntt/room-booking",
+  "description": "MVP quản lý và đặt phòng học cho Khoa Công nghệ Thông tin - Trường Đại học Nha Trang",
+  "type": "project",
+  "require": {
+    "php": ">=8.2"
+  },
+  "autoload": {
+    "psr-4": {
+      "App\\": "src/"
+    }
+  },
+  "scripts": {
+    "data:generate": "php scripts/data/generate_data.php",
+    "data:validate": "php scripts/data/validate_data.php"
+  }
+}
