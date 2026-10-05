@@ -18,7 +18,7 @@ final class App
 
     public static function boot(string $projectRoot): self
     {
-        date_default_timezone_set('Asia/Ho_Chi_Minh');
+        date_default_timezone_set('UTC');
 
         $router = new Router();
         $registerWebRoutes = require $projectRoot . '/src/routes/web.php';
@@ -41,4 +41,3 @@ final class App
         $response->send();
     }
 }
-

@@ -1,6 +1,6 @@
 {
-  "name": "ntu-cntt/room-booking",
-  "description": "MVP quản lý và đặt phòng học cho Khoa Công nghệ Thông tin - Trường Đại học Nha Trang",
+  "name": "student-team/accommodation-booking",
+  "description": "MVP marketplace tìm kiếm và đặt chỗ lưu trú đa cơ sở",
   "type": "project",
   "require": {
     "php": ">=8.2"

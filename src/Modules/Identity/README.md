@@ -1,4 +1,3 @@
 # Identity
 
-Sở hữu `NguoiDung`; phụ trách đăng nhập, trạng thái tài khoản và vai trò đơn giản. Không tự cấp quyền nghiệp vụ của module khác.
-
+Sở hữu `NguoiDung`, `ToChucDoiTac`, `ThanhVienDoiTac`; phụ trách đăng nhập, session, ba vai trò và ranh giới tổ chức. Mọi truy vấn đối tác phải nhận `ToChucDoiTacID`, không suy quyền sở hữu chỉ từ route.
