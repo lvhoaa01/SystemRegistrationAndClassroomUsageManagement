@@ -2,27 +2,14 @@
 
 declare(strict_types=1);
 
-const DATA_SEED = 20261004;
-const TERM_CODE = '2026-HK1';
-const CSV_HEADER = [
-    'SchemaVersion', 'MaDong', 'MaHocKy', 'Ngay', 'MaPhong', 'TietBatDau',
-    'TietKetThuc', 'LoaiHoatDong', 'MaLopHocPhan', 'MaGiangVien', 'SiSo',
-    'TenHoatDong', 'LoaiBuoi', 'GhiChu',
-];
+const DATA_SEED = 20261005;
+const AS_OF_UTC = '2026-10-05 12:00:00.000000';
+const INVENTORY_DAYS = 180;
+const PROPERTY_SOURCE_HEADERS = ['property_id', 'source_row', 'source_name', 'verified_name', 'address', 'match_type', 'checked_at'];
 
 $root = dirname(__DIR__, 2);
 $seedDir = $root . '/database/seeds';
-$validDir = $root . '/database/fixtures/csv/valid';
-$invalidDir = $root . '/database/fixtures/csv/invalid';
 $fixtureDir = $root . '/database/fixtures';
-
-foreach ([$seedDir, $validDir, $invalidDir] as $directory) {
-    if (!is_dir($directory) && !mkdir($directory, 0777, true) && !is_dir($directory)) {
-        throw new RuntimeException('Không thể tạo thư mục: ' . $directory);
-    }
-}
-
-mt_srand(DATA_SEED);
 
 function sqlValue(mixed $value): string
 {
@@ -35,978 +22,648 @@ function sqlValue(mixed $value): string
     if (is_int($value) || is_float($value)) {
         return (string) $value;
     }
-
     return "'" . str_replace(["\\", "'"], ["\\\\", "''"], (string) $value) . "'";
 }
 
+/** @param list<string> $columns @param list<list<mixed>> $rows */
 function sqlInsert(string $table, array $columns, array $rows, int $chunkSize = 250): string
 {
     if ($rows === []) {
         return '';
     }
-
     $output = '';
     foreach (array_chunk($rows, $chunkSize) as $chunk) {
-        $values = [];
-        foreach ($chunk as $row) {
-            $values[] = '(' . implode(', ', array_map('sqlValue', $row)) . ')';
-        }
-        $output .= 'INSERT INTO ' . $table . ' (' . implode(', ', $columns) . ") VALUES\n  ";
-        $output .= implode(",\n  ", $values) . ";\n\n";
+        $values = array_map(
+            static fn (array $row): string => '  (' . implode(', ', array_map('sqlValue', $row)) . ')',
+            $chunk,
+        );
+        $output .= 'INSERT INTO ' . $table . ' (' . implode(', ', $columns) . ") VALUES\n";
+        $output .= implode(",\n", $values) . ";\n\n";
     }
-
     return $output;
 }
 
 function writeText(string $path, string $content): void
 {
+    $directory = dirname($path);
+    if (!is_dir($directory) && !mkdir($directory, 0777, true) && !is_dir($directory)) {
+        throw new RuntimeException('Không tạo được thư mục: ' . $directory);
+    }
     if (file_put_contents($path, $content) === false) {
-        throw new RuntimeException('Không thể ghi tệp: ' . $path);
+        throw new RuntimeException('Không ghi được tệp: ' . $path);
     }
 }
 
-function writeCsv(string $path, array $header, array $rows): void
+function jsonData(mixed $value): string
 {
-    $handle = fopen($path, 'wb');
-    if ($handle === false) {
-        throw new RuntimeException('Không thể ghi CSV: ' . $path);
-    }
+    return json_encode($value, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
+}
 
+/** @param list<string> $expectedHeaders @return list<array<string, string>> */
+function readCsvRows(string $path, array $expectedHeaders): array
+{
+    $handle = fopen($path, 'rb');
+    if ($handle === false) {
+        throw new RuntimeException('Không đọc được tệp CSV: ' . $path);
+    }
     try {
-        fwrite($handle, "\xEF\xBB\xBF");
-        fputcsv($handle, $header, ',', '"', '');
-        foreach ($rows as $row) {
-            fputcsv($handle, $row, ',', '"', '');
+        $headers = fgetcsv($handle);
+        if ($headers === false) {
+            throw new RuntimeException('Tệp CSV không có tiêu đề: ' . $path);
         }
+        if ($headers !== $expectedHeaders) {
+            throw new RuntimeException('Tiêu đề CSV không đúng cấu trúc quy định: ' . $path);
+        }
+        $rows = [];
+        while (($values = fgetcsv($handle)) !== false) {
+            if ($values === [null] || $values === []) {
+                continue;
+            }
+            if (count($values) !== count($headers)) {
+                throw new RuntimeException('Số cột CSV không hợp lệ: ' . $path);
+            }
+            $rows[] = array_combine($headers, $values);
+        }
+        return $rows;
     } finally {
         fclose($handle);
     }
 }
 
-function jsonValue(mixed $value): string
+function slugify(string $value): string
 {
-    return (string) json_encode($value, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    $ascii = iconv('UTF-8', 'ASCII//TRANSLIT//IGNORE', $value);
+    $ascii = $ascii === false ? $value : $ascii;
+    $ascii = str_replace(["'", '`', '^', '~'], '', $ascii);
+    return trim((string) preg_replace('/[^a-z0-9]+/', '-', strtolower($ascii)), '-');
 }
 
-function dateOfTeachingWeek(DateTimeImmutable $firstMonday, int $week, int $dayOffset): string
+function dt(string $date, string $time = '12:00:00.000000'): string
 {
-    return $firstMonday->modify('+' . (($week - 1) * 7 + $dayOffset) . ' days')->format('Y-m-d');
+    return $date . ' ' . $time;
 }
 
-function periodKeys(int $roomId, string $date, int $start, int $end): array
+function uuidFromInt(int $value): string
 {
-    $keys = [];
-    for ($period = $start; $period <= $end; ++$period) {
-        $keys[] = $roomId . '|' . $date . '|' . $period;
+    return sprintf('00000000-0000-4000-8000-%012d', $value);
+}
+
+function datePlus(string $date, int $days): string
+{
+    return (new DateTimeImmutable($date))->modify(($days >= 0 ? '+' : '') . $days . ' days')->format('Y-m-d');
+}
+
+function basePrice(int $propertyId, int $roomIndex, int $variant, string $date): int
+{
+    $price = 420000 + ($propertyId * 17000) + ($roomIndex * 115000) + ($variant * 55000);
+    $day = (int) (new DateTimeImmutable($date))->format('N');
+    if ($day >= 5) {
+        $price = (int) round($price * 1.10);
     }
-    return $keys;
-}
-
-function resourceKeys(int $resourceId, string $date, int $start, int $end): array
-{
-    $keys = [];
-    for ($period = $start; $period <= $end; ++$period) {
-        $keys[] = $resourceId . '|' . $date . '|' . $period;
+    if ((new DateTimeImmutable($date))->format('m') === '12') {
+        $price = (int) round($price * 1.15);
     }
-    return $keys;
+    return (int) (round($price / 1000) * 1000);
 }
 
-function keysAreFree(array $store, array $keys): bool
+/** @return array{base:int,discount:int,included:int,atProperty:int,final:int,promotionId:?int} */
+function nightPrice(array $product, string $date, bool $promotionEligible): array
 {
-    foreach ($keys as $key) {
-        if (array_key_exists($key, $store)) {
-            return false;
-        }
+    $base = basePrice($product['propertyId'], $product['roomIndex'], $product['variant'], $date);
+    $promotionId = null;
+    $discount = 0;
+    if ($promotionEligible && $date >= '2026-10-05' && $date <= '2027-03-31') {
+        $promotionId = (($product['propertyId'] - 1) * 2) + 1;
+        $discount = (int) round($base * 0.10);
     }
-    return true;
-}
-
-function reserveKeys(array &$store, array $keys, array $owner): void
-{
-    foreach ($keys as $key) {
-        if (isset($store[$key])) {
-            throw new RuntimeException('Trùng slot trong generator: ' . $key);
-        }
-        $store[$key] = $owner;
-    }
-}
-
-function releaseOwnedKeys(array &$store, array $keys, string $type, int $id): void
-{
-    foreach ($keys as $key) {
-        if (($store[$key]['type'] ?? null) === $type && ($store[$key]['id'] ?? null) === $id) {
-            unset($store[$key]);
-        }
-    }
-}
-
-function deterministicUuid(int $number): string
-{
-    return sprintf('00000000-0000-4000-8000-%012d', $number);
-}
-
-function csvRow(array $event): array
-{
+    $net = $base - $discount;
+    $included = (int) round($net * 0.08);
+    $atProperty = (int) round($net * 0.05);
     return [
-        '1', $event['code'], TERM_CODE, $event['date'], $event['roomCode'],
-        (string) $event['start'], (string) $event['end'], $event['activityType'],
-        $event['classCode'] ?? '', $event['lecturerCode'] ?? '',
-        $event['size'] === null ? '' : (string) $event['size'],
-        $event['title'], $event['sessionType'], $event['note'],
+        'base' => $base,
+        'discount' => $discount,
+        'included' => $included,
+        'atProperty' => $atProperty,
+        'final' => $net + $included + $atProperty,
+        'promotionId' => $promotionId,
     ];
 }
 
-// -----------------------------------------------------------------------------
-// 1. Reference data
-// -----------------------------------------------------------------------------
-
-$periods = [
-    [1, '07:00:00', '07:50:00', 'SANG'],
-    [2, '07:50:00', '08:40:00', 'SANG'],
-    [3, '08:40:00', '09:50:00', 'SANG'],
-    [4, '09:50:00', '10:40:00', 'SANG'],
-    [5, '10:40:00', '11:30:00', 'SANG'],
-    [6, '13:00:00', '13:50:00', 'CHIEU'],
-    [7, '13:50:00', '14:40:00', 'CHIEU'],
-    [8, '14:40:00', '15:50:00', 'CHIEU'],
-    [9, '15:50:00', '16:40:00', 'CHIEU'],
-    [10, '16:40:00', '17:30:00', 'CHIEU'],
-    [11, '18:30:00', '19:20:00', 'TOI'],
-    [12, '19:20:00', '20:10:00', 'TOI'],
-    [13, '20:10:00', '21:00:00', 'TOI'],
-];
-
-$devices = [
-    [1, 'MAY_CHIEU', 'Máy chiếu', 'cái'],
-    [2, 'BANG_TRANG', 'Bảng trắng', 'cái'],
-    [3, 'DIEU_HOA', 'Điều hòa', 'cái'],
-    [4, 'INTERNET', 'Kết nối Internet', 'bộ'],
-    [5, 'MAY_TINH_GV', 'Máy tính giảng viên', 'cái'],
-    [6, 'MAY_TINH_SV', 'Máy tính sinh viên', 'cái'],
-    [7, 'AM_THANH', 'Hệ thống âm thanh', 'bộ'],
-    [8, 'LAB_MANG', 'Bộ thiết bị thực hành mạng', 'bộ'],
-];
-
-$referenceSql = "-- Dữ liệu tham chiếu phục vụ phát triển.\nUSE room_booking;\nSET NAMES utf8mb4;\n\n";
-$referenceSql .= sqlInsert('HocKy', [
-    'HocKyID', 'MaHocKy', 'TenHocKy', 'NgayBatDau', 'NgayKetThuc', 'TrangThai',
-    'DotImportHienHanhID', 'SoGioBaoTruocTuDong', 'SoNgayDatTruocToiDa',
-    'SoTietToiDaMoiPhieu', 'SoPhieuHoatDongToiDaMoiGV', 'TuanTamNghi', 'TuanThiCuoiKy',
-], [[1, TERM_CODE, 'Học kỳ 1 năm học 2026-2027', '2026-09-05', '2026-12-20', 'NHAP', null, 24, 45, 5, 8, 8, 13]]);
-
-$periodRows = [];
-foreach ($periods as [$number, $start, $end, $session]) {
-    $periodRows[] = [$number, 1, $number, $start, $end, $session];
+function roomInventory(int $roomIndex): int
+{
+    return [1 => 8, 2 => 6, 3 => 4, 4 => 3][$roomIndex];
 }
-$referenceSql .= sqlInsert('KhungTiet', ['KhungTietID', 'HocKyID', 'SoTiet', 'GioBatDau', 'GioKetThuc', 'Buoi'], $periodRows);
-$referenceSql .= sqlInsert('NgayNghi', ['NgayNghiID', 'HocKyID', 'Ngay', 'LyDo'], [
-    [1, 1, '2026-12-20', 'Ngày nghỉ cuối học kỳ'],
-]);
-$referenceSql .= sqlInsert('ThietBi', ['ThietBiID', 'MaThietBi', 'TenThietBi', 'DonViTinh', 'TrangThai'],
-    array_map(static fn (array $row): array => [...$row, 'HOAT_DONG'], $devices));
-writeText($seedDir . '/001_reference.sql', $referenceSql);
 
-// -----------------------------------------------------------------------------
-// 2. Facilities: 5 buildings, 46 provisional rooms
-// -----------------------------------------------------------------------------
+function isClosedDay(int $roomId, int $dayOffset): bool
+{
+    return (($roomId * 17) + $dayOffset) % 97 === 0;
+}
 
-$buildings = [
-    [1, 'G2', 'Giảng đường G2', 'HOAT_DONG'],
-    [2, 'G3', 'Giảng đường G3', 'HOAT_DONG'],
-    [3, 'G6', 'Giảng đường G6', 'HOAT_DONG'],
-    [4, 'G8', 'Giảng đường G8', 'HOAT_DONG'],
-    [5, 'NĐN', 'Tòa NĐN', 'HOAT_DONG'],
-];
+mt_srand(DATA_SEED);
 
-$roomCodes = [];
-foreach ([1, 3, 4] as $floor) {
-    for ($number = 1; $number <= 4; ++$number) {
-        $roomCodes[] = ['G2.' . $floor . sprintf('%02d', $number), 1, $floor];
+// 1. Reference catalog. City, property type and meal plan are CHECK/config in MVP.
+$propertyFacilities = ['WIFI','PARKING','POOL','RESTAURANT','FRONT_DESK_24H','GYM','AIRPORT_SHUTTLE','SPA','ELEVATOR','GARDEN','FAMILY_FRIENDLY','PET_FRIENDLY'];
+$roomFacilities = ['AIR_CONDITIONING','TV','BALCONY','MINIBAR','BATHTUB','KITCHENETTE','SAFE','DESK','HAIR_DRYER','SOUNDPROOF','CITY_VIEW','SEA_VIEW'];
+$facilityRows = [];
+$facilityId = 0;
+foreach ($propertyFacilities as $code) {
+    ++$facilityId;
+    $facilityRows[] = [$facilityId, $code, ucwords(strtolower(str_replace('_', ' ', $code))), 'PROPERTY', 'HOAT_DONG'];
+}
+foreach ($roomFacilities as $code) {
+    ++$facilityId;
+    $facilityRows[] = [$facilityId, $code, ucwords(strtolower(str_replace('_', ' ', $code))), 'ROOM', 'HOAT_DONG'];
+}
+$sql = "-- Reference catalog.\nUSE hotel_booking;\nSET NAMES utf8mb4;\n\n";
+$sql .= sqlInsert('TienNghi', ['TienNghiID','MaTienNghi','TenTienNghi','PhamVi','TrangThai'], $facilityRows);
+writeText($seedDir . '/001_reference.sql', $sql);
+
+// 2. Accounts and partner organizations.
+$passwordHash = '$2y$10$6e1V.I7AYrvoS3vtwUz4/OEXinJJfGTpCboBR6Dcn121CiiwcUmoO'; // Ntu@123456
+$userRows = [[1, 'ADMIN001', 'Quản trị viên nền tảng', 'admin@accommodation.local', '0900000001', $passwordHash, 'ADMIN', 'HOAT_DONG', AS_OF_UTC, AS_OF_UTC]];
+$organizationRows = [];
+$memberRows = [];
+for ($id = 1; $id <= 10; ++$id) {
+    $userId = $id + 1;
+    $userRows[] = [$userId, 'DT' . sprintf('%03d', $id), 'Đối tác lưu trú ' . sprintf('%02d', $id), 'partner' . sprintf('%02d', $id) . '@accommodation.local', '091' . sprintf('%07d', $id), $passwordHash, 'PARTNER', 'HOAT_DONG', AS_OF_UTC, AS_OF_UTC];
+    $organizationRows[] = [$id, 'TC' . sprintf('%03d', $id), 'Công ty Lưu trú ' . sprintf('%02d', $id), 'contact' . sprintf('%02d', $id) . '@accommodation.local', '092' . sprintf('%07d', $id), 'HOAT_DONG', AS_OF_UTC];
+    $memberRows[] = [$id, $userId, 1, AS_OF_UTC];
+}
+for ($id = 1; $id <= 500; ++$id) {
+    $userId = $id + 11;
+    $userRows[] = [$userId, 'KH' . sprintf('%04d', $id), 'Khách hàng ' . sprintf('%04d', $id), 'customer' . sprintf('%04d', $id) . '@example.test', '093' . sprintf('%07d', $id), $passwordHash, 'CUSTOMER', 'HOAT_DONG', AS_OF_UTC, AS_OF_UTC];
+}
+$sql = "-- Accounts; initial password: Ntu@123456\nUSE hotel_booking;\nSET NAMES utf8mb4;\n\n";
+$sql .= sqlInsert('NguoiDung', ['NguoiDungID','MaNguoiDung','HoTen','Email','SoDienThoai','MatKhauHash','VaiTro','TrangThai','TaoLuc','CapNhatLuc'], $userRows);
+$sql .= sqlInsert('ToChucDoiTac', ['ToChucDoiTacID','MaToChuc','TenToChuc','EmailLienHe','SoDienThoai','TrangThai','TaoLuc'], $organizationRows);
+$sql .= sqlInsert('ThanhVienDoiTac', ['ToChucDoiTacID','NguoiDungID','LaChuSoHuu','TaoLuc'], $memberRows);
+writeText($seedDir . '/002_accounts_partners.sql', $sql);
+
+// 3. Properties, rooms, images and facilities.
+$verifiedPropertyRows = readCsvRows($root . '/database/source/hcmc_accommodations_verified.csv', PROPERTY_SOURCE_HEADERS);
+if (count($verifiedPropertyRows) !== 30) {
+    throw new RuntimeException('Danh sách cơ sở đã đối chiếu phải có đúng 30 dòng.');
+}
+$seenSourceRows = [];
+foreach ($verifiedPropertyRows as $index => $sourceProperty) {
+    $expectedPropertyId = $index + 1;
+    $propertyId = filter_var($sourceProperty['property_id'], FILTER_VALIDATE_INT);
+    $sourceRow = filter_var($sourceProperty['source_row'], FILTER_VALIDATE_INT);
+    if ($propertyId !== $expectedPropertyId) {
+        throw new RuntimeException('Mã cơ sở trong CSV phải liên tục từ 1 đến 30 và đúng thứ tự.');
+    }
+    if ($sourceRow === false || $sourceRow < 2 || isset($seenSourceRows[$sourceRow])) {
+        throw new RuntimeException('Số dòng Excel phải hợp lệ và không trùng trong CSV.');
+    }
+    $seenSourceRows[$sourceRow] = true;
+    foreach (['source_name', 'verified_name', 'address'] as $requiredColumn) {
+        if (trim($sourceProperty[$requiredColumn]) === '') {
+            throw new RuntimeException('CSV thiếu giá trị bắt buộc tại cột ' . $requiredColumn . '.');
+        }
+    }
+    if (!str_contains($sourceProperty['address'], 'Thành phố Hồ Chí Minh')) {
+        throw new RuntimeException('Mọi địa chỉ trong CSV phải thuộc Thành phố Hồ Chí Minh.');
+    }
+    if (!in_array($sourceProperty['match_type'], ['KHOP_CHINH_XAC', 'KHOP_TEN_CU_BIET_DANH'], true)) {
+        throw new RuntimeException('Loại kết quả đối chiếu trong CSV không hợp lệ.');
+    }
+    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $sourceProperty['checked_at'])) {
+        throw new RuntimeException('Ngày đối chiếu trong CSV phải theo dạng YYYY-MM-DD.');
     }
 }
-for ($number = 1; $number <= 4; ++$number) {
-    $roomCodes[] = ['G3.3' . sprintf('%02d', $number), 2, 3];
-}
-for ($floor = 1; $floor <= 3; ++$floor) {
-    for ($number = 1; $number <= 4; ++$number) {
-        $roomCodes[] = ['G6.' . $floor . sprintf('%02d', $number), 3, $floor];
+$roomTemplates = [
+    1 => ['STD','Phòng đôi tiêu chuẩn',2,2,1,[['type' => 'DOUBLE', 'quantity' => 1]],24.0],
+    2 => ['DLX','Phòng hai giường cao cấp',2,2,1,[['type' => 'SINGLE', 'quantity' => 2]],30.0],
+    3 => ['FAM','Phòng gia đình',4,3,2,[['type' => 'DOUBLE', 'quantity' => 1], ['type' => 'SINGLE', 'quantity' => 2]],42.0],
+    4 => ['STE','Phòng hạng sang',3,3,1,[['type' => 'KING', 'quantity' => 1], ['type' => 'SOFA_BED', 'quantity' => 1]],48.0],
+];
+$propertyRows = $roomRows = $propertyFacilityRows = $roomFacilityRows = [];
+$properties = $rooms = [];
+$roomId = 0;
+foreach ($verifiedPropertyRows as $sourceProperty) {
+    $propertyId = (int) $sourceProperty['property_id'];
+    if ($propertyId < 1 || $propertyId > 30) {
+        throw new RuntimeException('Mã cơ sở trong CSV phải nằm từ 1 đến 30.');
     }
-}
-for ($floor = 1; $floor <= 2; ++$floor) {
-    for ($number = 1; $number <= 4; ++$number) {
-        $roomCodes[] = ['G8.' . $floor . sprintf('%02d', $number), 4, $floor];
+    $orgId = (($propertyId - 1) % 10) + 1;
+    $code = 'CS' . sprintf('%03d', $propertyId);
+    $name = $sourceProperty['verified_name'];
+    $slug = $code . '-' . slugify($name);
+    $state = $propertyId <= 27 ? 'ACTIVE' : ($propertyId === 28 ? 'DRAFT' : ($propertyId === 29 ? 'PENDING_REVIEW' : 'SUSPENDED'));
+    $mapQuery = rawurlencode($name . ', ' . $sourceProperty['address']);
+    $mapUrl = 'https://www.google.com/maps/search/?api=1&query=' . $mapQuery;
+    $propertyImages = [
+        ['path' => '/uploads/properties/' . $code . '/image-1.jpg', 'alt' => $name, 'sort' => 1, 'cover' => true],
+        ['path' => '/uploads/properties/' . $code . '/image-2.jpg', 'alt' => $name, 'sort' => 2, 'cover' => false],
+    ];
+    $reviewed = in_array($state, ['ACTIVE','SUSPENDED'], true);
+    $propertyRows[] = [
+        $propertyId, $code, $orgId, 'HCM', 'HOTEL', $name, $sourceProperty['source_name'],
+        'HCMC_TOURISM_XLSX_2024', 'ROW-' . $sourceProperty['source_row'], $slug,
+        $sourceProperty['address'], 'PUBLIC_WEB_CROSS_CHECK', dt($sourceProperty['checked_at']),
+        'Tên lấy từ danh mục Sở Du lịch; địa chỉ được đối chiếu từ nguồn công khai. Phòng, giá và tồn phòng là dữ liệu phát triển.',
+        jsonData($propertyImages), null, 'NOT_CHECKED', null, null, null, null, null,
+        $sourceProperty['match_type'], $mapUrl, null, 8.00, 1, 5.00, 0,
+        '14:00:00', '12:00:00', 'Asia/Ho_Chi_Minh', $state,
+        $reviewed ? 1 : null, $reviewed ? AS_OF_UTC : null,
+        $state === 'SUSPENDED' ? 'Tạm ngưng trong bộ dữ liệu phát triển.' : null,
+        AS_OF_UTC, AS_OF_UTC,
+    ];
+    $properties[$propertyId] = ['id' => $propertyId, 'orgId' => $orgId, 'state' => $state, 'code' => $code, 'name' => $name];
+    for ($f = 0; $f < 6; ++$f) {
+        $propertyFacilityRows[] = [$propertyId, (($propertyId + $f - 1) % 12) + 1, 1, null];
     }
-}
-foreach ([['NĐN.101', 1], ['NĐN.102', 1], ['NĐN.202', 2], ['NĐN.203', 2], ['NĐN.204', 2], ['NĐN.205', 2], ['NĐN.206', 2], ['NĐN.207', 2], ['NĐN.707', 7], ['NĐN.710', 7]] as [$code, $floor]) {
-    $roomCodes[] = [$code, 5, $floor];
+    for ($roomIndex = 1; $roomIndex <= 4; ++$roomIndex) {
+        ++$roomId;
+        [$roomCode, $roomName, $maxGuests, $maxAdults, $maxChildren, $beds, $area] = $roomTemplates[$roomIndex];
+        $roomImages = [['path' => '/uploads/rooms/' . $code . '-' . strtolower($roomCode) . '.jpg', 'alt' => $roomName, 'sort' => 1, 'cover' => true]];
+        $roomRows[] = [$roomId, $propertyId, $roomCode, $roomName, 'Không gian lưu trú ' . $roomName . ' được bố trí tiện nghi cơ bản.', $maxGuests, $maxAdults, $maxChildren, jsonData($beds), $area, 0, jsonData($roomImages), 'ACTIVE', AS_OF_UTC, AS_OF_UTC];
+        $rooms[$roomId] = ['id' => $roomId, 'propertyId' => $propertyId, 'roomIndex' => $roomIndex, 'code' => $roomCode, 'name' => $roomName, 'maxGuests' => $maxGuests, 'maxAdults' => $maxAdults, 'maxChildren' => $maxChildren];
+        for ($f = 0; $f < 5; ++$f) {
+            $roomFacilityRows[] = [$roomId, 13 + (($roomId + $f - 1) % 12), null, null];
+        }
+    }
 }
 
-$rooms = [];
-$roomByCode = [];
-$theoryRoomIds = [];
-$labRoomIds = [];
-foreach ($roomCodes as $index => [$code, $buildingId, $floor]) {
-    $id = $index + 1;
-    $isLab = in_array($code, ['NĐN.101', 'NĐN.102'], true);
-    $type = $isLab ? 'THUC_HANH' : 'LY_THUYET';
-    $capacity = $isLab ? 30 : 60;
-    $rooms[] = [$id, $buildingId, $code, $floor, 'Phòng ' . $code, $type, $capacity, true, 'HOAT_DONG', null];
-    $roomByCode[$code] = ['id' => $id, 'code' => $code, 'type' => $type, 'capacity' => $capacity];
-    if ($isLab) {
-        $labRoomIds[] = $id;
+$sql = "-- Properties, room types and facilities.\nUSE hotel_booking;\nSET NAMES utf8mb4;\n\n";
+$sql .= sqlInsert('CoSoLuuTru', ['CoSoLuuTruID','MaCoSo','ToChucDoiTacID','MaThanhPho','LoaiCoSo','TenCoSo','TenTrongNguon','NguonTen','MaBanGhiNguon','Slug','DiaChi','NguonDiaChi','DiaChiXacMinhLuc','MoTa','AnhJSON','GooglePlaceID','GoogleMatchStatus','GoogleVerifiedAt','ViDo','KinhDo','NguonToaDo','ToaDoXacMinhLuc','TrangThaiDoiChieu','DuongDanBanDo','SoSao','TyLeThue','ThueDaBaoGom','TyLePhiDichVu','PhiDichVuDaBaoGom','GioNhanPhong','GioTraPhong','MuiGio','TrangThai','NguoiDuyetID','DuyetLuc','GhiChuDuyet','TaoLuc','CapNhatLuc'], $propertyRows);
+$sql .= sqlInsert('LoaiPhong', ['LoaiPhongID','CoSoLuuTruID','MaLoaiPhong','TenLoaiPhong','MoTa','SoKhachToiDa','SoNguoiLonToiDa','SoTreEmToiDa','CauHinhGiuongJSON','DienTichM2','ChoPhepHutThuoc','AnhJSON','TrangThai','TaoLuc','CapNhatLuc'], $roomRows);
+$sql .= sqlInsert('CoSoTienNghi', ['CoSoLuuTruID','TienNghiID','MienPhi','GhiChu'], $propertyFacilityRows);
+$sql .= sqlInsert('LoaiPhongTienNghi', ['LoaiPhongID','TienNghiID','SoLuong','GhiChu'], $roomFacilityRows);
+writeText($seedDir . '/003_properties.sql', $sql);
+
+// 4. Policies, room products and property-wide promotions.
+$policyRows = $productRows = $promotionRows = [];
+$products = $productsByPropertyTiming = [];
+$productId = 0;
+for ($propertyId = 1; $propertyId <= 30; ++$propertyId) {
+    $policyBase = (($propertyId - 1) * 3);
+    $policyRows[] = [$policyBase + 1, $propertyId, 'FLEX_1D', 'Linh hoạt 1 ngày', 'FLEXIBLE', 24, 'FIRST_NIGHT', 1, 100, 'ACTIVE'];
+    $policyRows[] = [$policyBase + 2, $propertyId, 'FLEX_2D_50', 'Linh hoạt 2 ngày, phí 50%', 'FLEXIBLE', 48, 'PERCENT', 50, 100, 'ACTIVE'];
+    $policyRows[] = [$policyBase + 3, $propertyId, 'NON_REF', 'Không hoàn tiền', 'NON_REFUNDABLE', null, 'FULL_STAY', 100, 100, 'ACTIVE'];
+    for ($roomIndex = 1; $roomIndex <= 4; ++$roomIndex) {
+        $currentRoomId = (($propertyId - 1) * 4) + $roomIndex;
+        ++$productId;
+        $product = ['id' => $productId, 'propertyId' => $propertyId, 'roomId' => $currentRoomId, 'roomIndex' => $roomIndex, 'variant' => 1, 'timing' => 'PAY_AT_PROPERTY', 'policyId' => $policyBase + (($roomIndex % 2) + 1), 'mealId' => $roomIndex % 2 === 0 ? 2 : 1];
+        $products[$productId] = $product;
+        $productsByPropertyTiming[$propertyId]['PAY_AT_PROPERTY'][] = $product;
+        $productRows[] = [$productId, $currentRoomId, $product['policyId'], 'SP' . sprintf('%04d', $productId), 'Giá linh hoạt', $product['mealId'] === 2 ? 'BREAKFAST_INCLUDED' : 'ROOM_ONLY', 'PAY_AT_PROPERTY', 'ACTIVE'];
+        if ($roomIndex <= 2) {
+            ++$productId;
+            $product = ['id' => $productId, 'propertyId' => $propertyId, 'roomId' => $currentRoomId, 'roomIndex' => $roomIndex, 'variant' => 2, 'timing' => 'PAY_ONLINE', 'policyId' => $policyBase + 3, 'mealId' => $roomIndex === 2 ? 2 : 1];
+            $products[$productId] = $product;
+            $productsByPropertyTiming[$propertyId]['PAY_ONLINE'][] = $product;
+            $productRows[] = [$productId, $currentRoomId, $product['policyId'], 'SP' . sprintf('%04d', $productId), 'Giá tiết kiệm', $product['mealId'] === 2 ? 'BREAKFAST_INCLUDED' : 'ROOM_ONLY', 'PAY_ONLINE', 'ACTIVE'];
+        }
+    }
+    for ($p = 1; $p <= 2; ++$p) {
+        $promotionId = (($propertyId - 1) * 2) + $p;
+        $promotionRows[] = [$promotionId, $propertyId, 'KM' . sprintf('%03d', $promotionId), $p === 1 ? 'Ưu đãi đặt sớm' : 'Ưu đãi kỳ nghỉ', $p === 1 ? 10 : 7, '2026-10-01 00:00:00.000000', '2027-03-15 23:59:59.000000', '2026-10-05', '2027-03-31', 'ACTIVE'];
+    }
+}
+
+$sql = "-- Policies, room products and property-wide promotions.\nUSE hotel_booking;\nSET NAMES utf8mb4;\n\n";
+$sql .= sqlInsert('ChinhSachHuy', ['ChinhSachHuyID','CoSoLuuTruID','MaChinhSach','TenChinhSach','LoaiChinhSach','SoGioHuyMienPhi','LoaiPhat','GiaTriPhat','TyLePhatNoShow','TrangThai'], $policyRows);
+$sql .= sqlInsert('SanPhamPhong', ['SanPhamPhongID','LoaiPhongID','ChinhSachHuyID','MaSanPham','TenSanPham','LoaiBuaAn','ThoiDiemThanhToan','TrangThai'], $productRows);
+$sql .= sqlInsert('KhuyenMai', ['KhuyenMaiID','CoSoLuuTruID','MaKhuyenMai','TenKhuyenMai','PhanTramGiam','DatTu','DatDen','LuuTruTu','LuuTruDen','TrangThai'], $promotionRows);
+writeText($seedDir . '/004_products_policies.sql', $sql);
+
+// 5/6. Operational model first, so inventory counters can be derived from active ledger.
+$previewRows = $bookingRows = $bookingItemRows = $nightRows = [];
+$ledgerRows = $paymentRows = $waiverRows = [];
+$reviewRows = $auditRows = [];
+$reserved = [];
+$bookingModels = [];
+$bookingItemId = $ledgerId = $auditId = 0;
+
+for ($bookingId = 1; $bookingId <= 2000; ++$bookingId) {
+    $propertyId = (($bookingId - 1) % 27) + 1;
+    $customerId = 12 + (($bookingId - 1) % 500);
+    if ($bookingId <= 800) {
+        $state = 'COMPLETED';
+        $checkin = datePlus('2026-07-10', $bookingId % 75);
+    } elseif ($bookingId <= 900) {
+        $state = 'NO_SHOW';
+        $checkin = datePlus('2026-08-15', $bookingId % 40);
+    } elseif ($bookingId <= 1200) {
+        $state = 'CANCELLED';
+        $checkin = datePlus('2026-10-10', ($bookingId * 3) % 130);
+    } elseif ($bookingId <= 1700) {
+        $state = 'CONFIRMED';
+        $checkin = datePlus('2026-10-06', ($bookingId * 5) % 160);
+    } elseif ($bookingId <= 1800) {
+        $state = 'PENDING_PAYMENT';
+        $checkin = datePlus('2026-10-08', ($bookingId * 7) % 45);
     } else {
-        $theoryRoomIds[] = $id;
+        $state = 'PAYMENT_FAILED';
+        $checkin = datePlus('2026-10-10', ($bookingId * 11) % 120);
     }
-}
-
-$roomEquipmentRows = [];
-foreach ($rooms as $room) {
-    $roomId = $room[0];
-    $isLab = $room[5] === 'THUC_HANH';
-    foreach ([[1, 1], [2, 1], [3, 2], [4, 1]] as [$deviceId, $quantity]) {
-        $roomEquipmentRows[] = [$roomId, $deviceId, $quantity, 0, '2026-10-04 08:00:00.000000'];
+    $nights = 2 + ($bookingId % 4);
+    $checkout = datePlus($checkin, $nights);
+    $timing = in_array($state, ['PENDING_PAYMENT','PAYMENT_FAILED'], true) ? 'PAY_ONLINE' : ($bookingId % 2 === 0 ? 'PAY_AT_PROPERTY' : 'PAY_ONLINE');
+    $itemCount = $bookingId % 4 === 0 ? 2 : 1;
+    $availableProducts = $productsByPropertyTiming[$propertyId][$timing];
+    $selected = [];
+    for ($itemIndex = 0; $itemIndex < $itemCount; ++$itemIndex) {
+        $product = $availableProducts[($bookingId + $itemIndex) % count($availableProducts)];
+        if ($itemCount === 2 && $bookingId % 8 === 0) {
+            $product = $availableProducts[$bookingId % count($availableProducts)];
+        }
+        $selected[] = $product;
     }
-    if ($isLab) {
-        $roomEquipmentRows[] = [$roomId, 5, 1, 0, '2026-10-04 08:00:00.000000'];
-        $roomEquipmentRows[] = [$roomId, 6, 30, 0, '2026-10-04 08:00:00.000000'];
-        $roomEquipmentRows[] = [$roomId, 8, 15, 0, '2026-10-04 08:00:00.000000'];
-    } elseif ($roomId % 4 === 0) {
-        $roomEquipmentRows[] = [$roomId, 7, 1, 0, '2026-10-04 08:00:00.000000'];
-    }
-}
-
-$facilitiesSql = "-- Danh mục 46 phòng phục vụ phát triển; cần đối chiếu trước khi vận hành thực tế.\nUSE room_booking;\nSET NAMES utf8mb4;\n\n";
-$facilitiesSql .= sqlInsert('ToaNha', ['ToaNhaID', 'MaToa', 'TenToa', 'TrangThai'], $buildings);
-$facilitiesSql .= sqlInsert('Phong', ['PhongID', 'ToaNhaID', 'MaPhong', 'Tang', 'TenPhong', 'LoaiPhong', 'SucChua', 'ChoPhepDat', 'TrangThai', 'GhiChu'], $rooms);
-$facilitiesSql .= sqlInsert('PhongThietBi', ['PhongID', 'ThietBiID', 'SoLuongTot', 'SoLuongHong', 'CapNhatLuc'], $roomEquipmentRows);
-writeText($seedDir . '/002_facilities.sql', $facilitiesSql);
-
-// -----------------------------------------------------------------------------
-// 3. Users
-// -----------------------------------------------------------------------------
-
-$lecturerNames = [
-    'Phạm Thị Thu Thúy', 'Nguyễn Mạnh Cương', 'Nguyễn Đình Hưng', 'Phạm Văn Nam',
-    'Nguyễn Thủy Đoan Trang', 'Huỳnh Tuấn Anh', 'Nguyễn Thị Hương Lý',
-    'Bùi Thị Hồng Minh', 'Ngô Nguyễn Tường Nghi', 'Nguyễn Văn Rạng',
-    'Nguyễn Đình Hoàng Sơn', 'Bùi Chí Thành', 'Mai Cường Thọ', 'Nguyễn Hải Triều',
-];
-$passwordHash = '$2y$10$6e1V.I7AYrvoS3vtwUz4/OEXinJJfGTpCboBR6Dcn121CiiwcUmoO';
-$userRows = [];
-$lecturers = [];
-foreach ($lecturerNames as $index => $name) {
-    $id = $index + 1;
-    $code = 'GV' . sprintf('%03d', $id);
-    $userRows[] = [$id, $code, $name, 'gv' . sprintf('%03d', $id) . '@ntu.edu.vn', $passwordHash, 'GIANG_VIEN', true, 'DANG_DAY', 'HOAT_DONG', '2026-09-01 08:00:00.000000', '2026-09-01 08:00:00.000000'];
-    $lecturers[$id] = ['id' => $id, 'code' => $code, 'name' => $name];
-}
-$userRows[] = [15, 'QL001', 'Cán bộ quản lý', 'quanly@ntu.edu.vn', $passwordHash, 'QUAN_LY', false, 'KHONG_AP_DUNG', 'HOAT_DONG', '2026-09-01 08:00:00.000000', '2026-09-01 08:00:00.000000'];
-$userRows[] = [16, 'ADMIN001', 'Quản trị viên', 'admin@ntu.edu.vn', $passwordHash, 'ADMIN', false, 'KHONG_AP_DUNG', 'HOAT_DONG', '2026-09-01 08:00:00.000000', '2026-09-01 08:00:00.000000'];
-
-$usersSql = "-- Mật khẩu khởi tạo dùng chung: Ntu@123456\nUSE room_booking;\nSET NAMES utf8mb4;\n\n";
-$usersSql .= sqlInsert('NguoiDung', ['NguoiDungID', 'MaNguoiDung', 'HoTen', 'Email', 'MatKhauHash', 'VaiTro', 'LaGiangVien', 'TrangThaiGiangDay', 'TrangThaiTaiKhoan', 'TaoLuc', 'CapNhatLuc'], $userRows);
-writeText($seedDir . '/003_lecturers.sql', $usersSql);
-
-// -----------------------------------------------------------------------------
-// 4. Academic catalog: 30 courses, 30 groups, 56 sections
-// -----------------------------------------------------------------------------
-
-$courseDefinitions = [
-    ['CNTT', 'Cơ sở lập trình', false, false],
-    ['CNTT', 'Cấu trúc dữ liệu và giải thuật', false, true],
-    ['CNTT', 'Cơ sở dữ liệu', false, true],
-    ['CNTT', 'Mạng máy tính', true, true],
-    ['CNTT', 'Lập trình hướng đối tượng', false, true],
-    ['CNTT', 'Công nghệ phần mềm', false, true],
-    ['CNTT', 'Phát triển ứng dụng Web', true, true],
-    ['CNTT', 'Hệ quản trị cơ sở dữ liệu', true, true],
-    ['CNTT', 'An toàn thông tin', false, true],
-    ['CNTT', 'Điện toán đám mây', false, true],
-    ['CNTT', 'Phân tích thiết kế hệ thống', false, true],
-    ['CNTT', 'Kiểm thử phần mềm', false, true],
-    ['KHMT', 'Toán rời rạc', false, false],
-    ['KHMT', 'Trí tuệ nhân tạo', true, true],
-    ['KHMT', 'Học máy', true, true],
-    ['KHMT', 'Khai phá dữ liệu', false, true],
-    ['KHMT', 'Xử lý ngôn ngữ tự nhiên', false, true],
-    ['KHMT', 'Thị giác máy tính', false, true],
-    ['KHMT', 'Phân tích dữ liệu', false, true],
-    ['KHMT', 'Thuật toán nâng cao', false, true],
-    ['KHMT', 'Khoa học dữ liệu', false, true],
-    ['HTTTQL', 'Nhập môn quản trị học', false, false],
-    ['HTTTQL', 'Phân tích nghiệp vụ', false, true],
-    ['HTTTQL', 'Hệ thống thông tin quản lý', false, true],
-    ['HTTTQL', 'Hệ thống ERP', true, true],
-    ['HTTTQL', 'Thương mại điện tử', false, true],
-    ['HTTTQL', 'Kho dữ liệu và BI', true, true],
-    ['HTTTQL', 'Quản trị dự án CNTT', false, true],
-    ['HTTTQL', 'Phân tích dữ liệu kinh doanh', false, true],
-    ['HTTTQL', 'Chuyển đổi số doanh nghiệp', false, true],
-];
-
-$courses = [];
-$courseRows = [];
-$coursesByProgram = ['CNTT' => [], 'KHMT' => [], 'HTTTQL' => []];
-foreach ($courseDefinitions as $index => [$program, $name, $lab, $specialized]) {
-    $id = $index + 1;
-    $code = 'HP' . sprintf('%03d', $id);
-    $periodCount = $specialized ? 3 : 2;
-    $requirements = $lab
-        ? [['maThietBi' => 'MAY_TINH_SV', 'soLuong' => 30], ['maThietBi' => 'INTERNET', 'soLuong' => 1]]
-        : [['maThietBi' => 'MAY_CHIEU', 'soLuong' => 1]];
-    $course = [
-        'id' => $id, 'code' => $code, 'program' => $program, 'name' => $name,
-        'lab' => $lab, 'specialized' => $specialized, 'periods' => $periodCount,
-        'requirements' => $requirements,
-    ];
-    $courses[$id] = $course;
-    $coursesByProgram[$program][] = $course;
-    $courseRows[] = [$id, $code, $name, $program, $specialized ? 'CHUYEN_NGANH' : 'THONG_THUONG', 2, $periodCount, 12, jsonValue($requirements), 'HOAT_DONG'];
-}
-
-$studentGroups = [];
-foreach ([65, 66] as $cohort) {
-    foreach (['CNTT', 'TTMMT', 'HTTT'] as $specialization) {
-        $studentGroups[] = ['code' => 'K' . $cohort . '.' . $specialization, 'program' => 'CNTT'];
-    }
-}
-foreach ([67, 68] as $cohort) {
-    for ($class = 1; $class <= 4; ++$class) {
-        $studentGroups[] = ['code' => 'K' . $cohort . '.CNTT-' . $class, 'program' => 'CNTT'];
-    }
-}
-foreach ([65, 66, 67, 68] as $cohort) {
-    for ($class = 1; $class <= 2; ++$class) {
-        $studentGroups[] = ['code' => 'K' . $cohort . '.KHMT-' . $class, 'program' => 'KHMT'];
-        $studentGroups[] = ['code' => 'K' . $cohort . '.HTTTQL-' . $class, 'program' => 'HTTTQL'];
-    }
-}
-
-if (count($studentGroups) !== 30) {
-    throw new RuntimeException('Số nhóm sinh viên phải là 30.');
-}
-
-$sections = [];
-$sectionRows = [];
-$assignmentRows = [];
-$lecturerSections = array_fill(1, 14, []);
-for ($index = 0; $index < 56; ++$index) {
-    $id = $index + 1;
-    $group = $studentGroups[$index % count($studentGroups)];
-    $programCourses = $coursesByProgram[$group['program']];
-    $courseIndex = ($index * 5 + intdiv($index, count($studentGroups))) % count($programCourses);
-    $course = $programCourses[$courseIndex];
-    $lecturerId = ($index % 14) + 1;
-    $code = 'LHP2026' . sprintf('%03d', $id);
-    $size = $course['lab'] ? 30 : 60;
-    $section = [
-        'id' => $id, 'code' => $code, 'group' => $group['code'], 'course' => $course,
-        'lecturerId' => $lecturerId, 'lecturerCode' => $lecturers[$lecturerId]['code'],
-        'size' => $size,
-    ];
-    $sections[$id] = $section;
-    $lecturerSections[$lecturerId][] = $id;
-    $sectionRows[] = [$id, 1, $course['id'], $code, $group['code'], $size, 2, $course['periods'], 12, $course['lab'] ? 'THUC_HANH' : 'LY_THUYET', 'MO'];
-    $assignmentRows[] = [$id, $lecturerId, 'CHINH'];
-}
-// Một phân công phối hợp để fixture class_conflict có hai giảng viên hợp lệ.
-$assignmentRows[] = [1, 2, 'PHOI_HOP'];
-
-$academicSql = "-- Danh mục học thuật tổng hợp; tên học phần đã được làm sạch tối thiểu, chưa phải export học vụ chính thức.\nUSE room_booking;\nSET NAMES utf8mb4;\n\n";
-$academicSql .= sqlInsert('HocPhan', ['HocPhanID', 'MaHocPhan', 'TenHocPhan', 'NhomDaoTao', 'LoaiHocPhan', 'SoBuoiMoiTuanMacDinh', 'SoTietMoiBuoiMacDinh', 'SoTuanDayMacDinh', 'YeuCauThietBiJSON', 'TrangThai'], $courseRows);
-$academicSql .= sqlInsert('LopHocPhan', ['LopHocPhanID', 'HocKyID', 'HocPhanID', 'MaLopHocPhan', 'MaNhomSinhVien', 'SiSo', 'SoBuoiMoiTuan', 'SoTietMoiBuoi', 'SoTuanDay', 'LoaiBuoiMacDinh', 'TrangThai'], $sectionRows);
-$academicSql .= sqlInsert('PhanCongGiangDay', ['LopHocPhanID', 'GiangVienID', 'VaiTroGiangDay'], $assignmentRows);
-writeText($seedDir . '/004_academic.sql', $academicSql);
-
-// -----------------------------------------------------------------------------
-// 5. Official schedule
-// -----------------------------------------------------------------------------
-
-$weeklyCandidatesByLength = [
-    2 => [],
-    3 => [],
-];
-for ($day = 0; $day <= 5; ++$day) {
-    foreach ([1, 3, 4, 6, 8, 9, 11, 12] as $start) {
-        $weeklyCandidatesByLength[2][] = ['day' => $day, 'start' => $start, 'end' => $start + 1];
-    }
-    foreach ([1, 3, 6, 8, 11] as $start) {
-        $weeklyCandidatesByLength[3][] = ['day' => $day, 'start' => $start, 'end' => $start + 2];
-    }
-}
-
-$weeklyLecturer = [];
-$weeklyGroup = [];
-$weeklyRoom = [];
-$sectionPlans = [];
-
-foreach ($sections as $section) {
-    $periodCount = $section['course']['periods'];
-    $candidates = $weeklyCandidatesByLength[$periodCount];
-    $offset = ($section['id'] * 7) % count($candidates);
-    $candidates = array_merge(array_slice($candidates, $offset), array_slice($candidates, 0, $offset));
-    $candidateRooms = $section['course']['lab'] ? $labRoomIds : $theoryRoomIds;
-    $roomOffset = ($section['id'] * 5) % count($candidateRooms);
-    $candidateRooms = array_merge(array_slice($candidateRooms, $roomOffset), array_slice($candidateRooms, 0, $roomOffset));
-    $chosen = null;
-
-    foreach ($candidateRooms as $roomId) {
-        foreach ($candidates as $first) {
-            foreach ($candidates as $second) {
-                if ($first['day'] === $second['day'] || abs($first['day'] - $second['day']) < 2) {
-                    continue;
-                }
-                $slots = [$first, $second];
-                $free = true;
-                foreach ($slots as $slot) {
-                    for ($period = $slot['start']; $period <= $slot['end']; ++$period) {
-                        $lecturerKey = $section['lecturerId'] . '|' . $slot['day'] . '|' . $period;
-                        $groupKey = $section['group'] . '|' . $slot['day'] . '|' . $period;
-                        $roomKey = $roomId . '|' . $slot['day'] . '|' . $period;
-                        if (isset($weeklyLecturer[$lecturerKey]) || isset($weeklyGroup[$groupKey]) || isset($weeklyRoom[$roomKey])) {
-                            $free = false;
-                            break 2;
-                        }
+    $holdsInventory = in_array($state, ['CONFIRMED','PENDING_PAYMENT'], true);
+    if ($holdsInventory) {
+        for ($shift = 0; $shift < 180 - $nights; ++$shift) {
+            $candidate = datePlus($checkin, $shift);
+            $demand = [];
+            foreach ($selected as $product) {
+                for ($night = 0; $night < $nights; ++$night) {
+                    $date = datePlus($candidate, $night);
+                    $dayOffset = (int) (new DateTimeImmutable('2026-10-05'))->diff(new DateTimeImmutable($date))->format('%a');
+                    $key = $product['roomId'] . '|' . $date;
+                    $demand[$key] = ($demand[$key] ?? 0) + 1;
+                    if (isClosedDay($product['roomId'], $dayOffset) || (($reserved[$key] ?? 0) + $demand[$key]) > roomInventory($product['roomIndex'])) {
+                        continue 3;
                     }
                 }
-                if (!$free) {
-                    continue;
-                }
-
-                $chosen = ['roomId' => $roomId, 'slots' => $slots];
-                break 3;
             }
-        }
-    }
-
-    if ($chosen === null) {
-        throw new RuntimeException('Không xếp được lịch tuần cho ' . $section['code']);
-    }
-
-    foreach ($chosen['slots'] as $slot) {
-        for ($period = $slot['start']; $period <= $slot['end']; ++$period) {
-            $weeklyLecturer[$section['lecturerId'] . '|' . $slot['day'] . '|' . $period] = $section['id'];
-            $weeklyGroup[$section['group'] . '|' . $slot['day'] . '|' . $period] = $section['id'];
-            $weeklyRoom[$chosen['roomId'] . '|' . $slot['day'] . '|' . $period] = $section['id'];
-        }
-    }
-    $sectionPlans[$section['id']] = $chosen;
-}
-
-$roomById = [];
-foreach ($rooms as $room) {
-    $roomById[$room[0]] = ['id' => $room[0], 'code' => $room[2], 'type' => $room[5], 'capacity' => $room[6]];
-}
-
-$events = [];
-$roomOccupancy = [];
-$lecturerOccupancy = [];
-$classOccupancy = [];
-$eventId = 0;
-$firstMonday = new DateTimeImmutable('2026-09-07');
-$teachingWeeks = [1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 12];
-
-foreach ($sections as $section) {
-    $plan = $sectionPlans[$section['id']];
-    foreach ($teachingWeeks as $week) {
-        foreach ($plan['slots'] as $slot) {
-            ++$eventId;
-            $date = dateOfTeachingWeek($firstMonday, $week, $slot['day']);
-            $event = [
-                'id' => $eventId,
-                'code' => 'LCT' . sprintf('%05d', $eventId),
-                'date' => $date,
-                'roomId' => $plan['roomId'],
-                'roomCode' => $roomById[$plan['roomId']]['code'],
-                'start' => $slot['start'],
-                'end' => $slot['end'],
-                'activityType' => 'LICH_HOC',
-                'classId' => $section['id'],
-                'classCode' => $section['code'],
-                'lecturerId' => $section['lecturerId'],
-                'lecturerCode' => $section['lecturerCode'],
-                'size' => $section['size'],
-                'title' => $section['course']['name'],
-                'sessionType' => $section['course']['lab'] ? 'THUC_HANH' : 'LY_THUYET',
-                'note' => 'Tuần ' . $week . ' - dữ liệu tổng hợp',
-                'state' => 'HOAT_DONG',
-            ];
-            $events[$eventId] = $event;
-            reserveKeys($roomOccupancy, periodKeys($event['roomId'], $date, $event['start'], $event['end']), ['type' => 'L', 'id' => $eventId]);
-            reserveKeys($lecturerOccupancy, resourceKeys($event['lecturerId'], $date, $event['start'], $event['end']), ['type' => 'L', 'id' => $eventId]);
-            reserveKeys($classOccupancy, resourceKeys($event['classId'], $date, $event['start'], $event['end']), ['type' => 'L', 'id' => $eventId]);
-        }
-    }
-}
-
-// Mỗi lớp có một lịch thi tuần 13.
-$examDates = [];
-for ($day = 0; $day <= 5; ++$day) {
-    $examDates[] = dateOfTeachingWeek($firstMonday, 13, $day);
-}
-$examBlocks = [[1, 2], [3, 4], [6, 7], [8, 9], [11, 12]];
-foreach ($sections as $section) {
-    $placed = false;
-    foreach ($examDates as $date) {
-        foreach ($examBlocks as [$start, $end]) {
-            foreach ($theoryRoomIds as $roomId) {
-                $roomKeys = periodKeys($roomId, $date, $start, $end);
-                $classKeys = resourceKeys($section['id'], $date, $start, $end);
-                if (!keysAreFree($roomOccupancy, $roomKeys) || !keysAreFree($classOccupancy, $classKeys)) {
-                    continue;
-                }
-                ++$eventId;
-                $event = [
-                    'id' => $eventId,
-                    'code' => 'THI' . sprintf('%05d', $eventId),
-                    'date' => $date,
-                    'roomId' => $roomId,
-                    'roomCode' => $roomById[$roomId]['code'],
-                    'start' => $start,
-                    'end' => $end,
-                    'activityType' => 'LICH_THI',
-                    'classId' => $section['id'],
-                    'classCode' => $section['code'],
-                    'lecturerId' => null,
-                    'lecturerCode' => null,
-                    'size' => $section['size'],
-                    'title' => 'Thi cuối kỳ - ' . $section['course']['name'],
-                    'sessionType' => 'THI',
-                    'note' => 'Tuần 13',
-                    'state' => 'HOAT_DONG',
-                ];
-                $events[$eventId] = $event;
-                reserveKeys($roomOccupancy, $roomKeys, ['type' => 'L', 'id' => $eventId]);
-                reserveKeys($classOccupancy, $classKeys, ['type' => 'L', 'id' => $eventId]);
-                $placed = true;
-                break 3;
+            $checkin = $candidate;
+            $checkout = datePlus($checkin, $nights);
+            foreach ($demand as $key => $quantity) {
+                $reserved[$key] = ($reserved[$key] ?? 0) + $quantity;
             }
-        }
-    }
-    if (!$placed) {
-        throw new RuntimeException('Không xếp được lịch thi cho ' . $section['code']);
-    }
-}
-
-// 1.800 khoảng bận ngoài khoa, chỉ chiếm phòng.
-$allDates = [];
-for ($date = new DateTimeImmutable('2026-09-05'); $date <= new DateTimeImmutable('2026-12-19'); $date = $date->modify('+1 day')) {
-    if ((int) $date->format('N') <= 6) {
-        $allDates[] = $date->format('Y-m-d');
-    }
-}
-$externalBlocks = [[1, 2], [3, 5], [6, 7], [8, 10], [11, 13]];
-$externalCount = 0;
-$attempt = 0;
-while ($externalCount < 1800 && $attempt < 200000) {
-    ++$attempt;
-    $roomId = mt_rand(1, count($rooms));
-    $date = $allDates[mt_rand(0, count($allDates) - 1)];
-    [$start, $end] = $externalBlocks[mt_rand(0, count($externalBlocks) - 1)];
-    $keys = periodKeys($roomId, $date, $start, $end);
-    if (!keysAreFree($roomOccupancy, $keys)) {
-        continue;
-    }
-    ++$eventId;
-    ++$externalCount;
-    $event = [
-        'id' => $eventId,
-        'code' => 'BNK' . sprintf('%05d', $externalCount),
-        'date' => $date,
-        'roomId' => $roomId,
-        'roomCode' => $roomById[$roomId]['code'],
-        'start' => $start,
-        'end' => $end,
-        'activityType' => 'BAN_NGOAI_KHOA',
-        'classId' => null,
-        'classCode' => null,
-        'lecturerId' => null,
-        'lecturerCode' => null,
-        'size' => null,
-        'title' => 'Phòng đã có lịch đơn vị khác',
-        'sessionType' => 'KHAC',
-        'note' => 'Khoảng bận tổng hợp ngoài phạm vi khoa',
-        'state' => 'HOAT_DONG',
-    ];
-    $events[$eventId] = $event;
-    reserveKeys($roomOccupancy, $keys, ['type' => 'L', 'id' => $eventId]);
-}
-
-if ($externalCount !== 1800) {
-    throw new RuntimeException('Không sinh đủ khoảng bận ngoài khoa.');
-}
-
-ksort($events);
-$currentCsvRows = array_map('csvRow', array_values($events));
-$currentCsvPath = $validDir . '/official_schedule.csv';
-writeCsv($currentCsvPath, CSV_HEADER, $currentCsvRows);
-
-// Replacement: chuyển 25 dòng ngoài khoa sang phòng trống khác, giữ business key.
-$replacementEvents = $events;
-$replacementOccupancy = [];
-foreach ($replacementEvents as $event) {
-    reserveKeys($replacementOccupancy, periodKeys($event['roomId'], $event['date'], $event['start'], $event['end']), ['type' => 'L', 'id' => $event['id']]);
-}
-$moved = 0;
-foreach ($replacementEvents as $id => &$event) {
-    if ($event['activityType'] !== 'BAN_NGOAI_KHOA' || $moved >= 25) {
-        continue;
-    }
-    $oldKeys = periodKeys($event['roomId'], $event['date'], $event['start'], $event['end']);
-    releaseOwnedKeys($replacementOccupancy, $oldKeys, 'L', $event['id']);
-    $newRoomId = null;
-    foreach ($theoryRoomIds as $candidateRoomId) {
-        if ($candidateRoomId === $event['roomId']) {
-            continue;
-        }
-        $newKeys = periodKeys($candidateRoomId, $event['date'], $event['start'], $event['end']);
-        if (keysAreFree($replacementOccupancy, $newKeys)) {
-            $newRoomId = $candidateRoomId;
-            reserveKeys($replacementOccupancy, $newKeys, ['type' => 'L', 'id' => $event['id']]);
             break;
         }
     }
-    if ($newRoomId === null) {
-        reserveKeys($replacementOccupancy, $oldKeys, ['type' => 'L', 'id' => $event['id']]);
-        continue;
+
+    $createdDate = $state === 'COMPLETED' || $state === 'NO_SHOW' ? datePlus($checkin, -20) : '2026-10-05';
+    $createdAt = dt($createdDate, sprintf('%02d:%02d:00.000000', 8 + ($bookingId % 10), $bookingId % 60));
+    $expiresAt = (new DateTimeImmutable(substr($createdAt, 0, 19), new DateTimeZone('UTC')))->modify('+15 minutes')->format('Y-m-d H:i:s.000000');
+    $holdExpiry = $state === 'PENDING_PAYMENT' ? '2026-10-05 12:10:00.000000' : null;
+    $total = 0;
+    $itemModels = [];
+    foreach ($selected as $itemIndex => $product) {
+        $itemTotal = 0;
+        $nightModels = [];
+        for ($night = 0; $night < $nights; ++$night) {
+            $date = datePlus($checkin, $night);
+            $price = nightPrice($product, $date, $bookingId % 3 === 0);
+            $itemTotal += $price['final'];
+            $nightModels[] = ['date' => $date, 'price' => $price];
+        }
+        $total += $itemTotal;
+        $room = $rooms[$product['roomId']];
+        $children = ($bookingId + $itemIndex + 1) % 5 === 0 && $room['maxChildren'] > 0 ? [7] : [];
+        $itemModels[] = [
+            'product' => $product,
+            'total' => $itemTotal,
+            'nights' => $nightModels,
+            'order' => $itemIndex + 1,
+            'adults' => min(2, $room['maxAdults']),
+            'children' => $children,
+        ];
     }
-    $event['roomId'] = $newRoomId;
-    $event['roomCode'] = $roomById[$newRoomId]['code'];
-    $event['note'] = 'Điều chỉnh: đổi phòng cho khoảng bận ngoài khoa';
-    ++$moved;
-}
-unset($event);
-if ($moved !== 25) {
-    throw new RuntimeException('Không tạo đủ 25 thay đổi cho replacement CSV.');
-}
-$replacementCsvPath = $validDir . '/official_schedule_replacement.csv';
-writeCsv($replacementCsvPath, CSV_HEADER, array_map('csvRow', array_values($replacementEvents)));
 
-// -----------------------------------------------------------------------------
-// 6. Operational state after current CSV was published
-// -----------------------------------------------------------------------------
-
-$releaseRows = [];
-$releaseCandidates = array_values(array_filter($events, static fn (array $event): bool =>
-    $event['activityType'] === 'LICH_HOC' && $event['date'] >= '2026-10-12'));
-usort($releaseCandidates, static fn (array $a, array $b): int => [$a['date'], $a['id']] <=> [$b['date'], $b['id']]);
-foreach (array_slice($releaseCandidates, 0, 30) as $index => $event) {
-    $requestId = $index + 1;
-    $state = $index < 10 ? 'DA_XAC_NHAN' : ($index < 20 ? 'BI_TU_CHOI' : 'CHO_DUYET');
-    $processedBy = $state === 'CHO_DUYET' ? null : 15;
-    $processedAt = $state === 'CHO_DUYET' ? null : '2026-10-04 10:' . sprintf('%02d', $index) . ':00.000000';
-    $reason = $state === 'BI_TU_CHOI' ? 'Lớp vẫn sử dụng phòng theo xác nhận mới nhất' : ($state === 'DA_XAC_NHAN' ? 'Đã xác nhận giảng viên không sử dụng phòng' : null);
-    $releaseRows[] = [$requestId, $event['id'], $event['lecturerId'], 'Giảng viên báo bận công tác #' . $requestId, $state, $processedBy, $reason, '2026-10-03 09:' . sprintf('%02d', $index) . ':00.000000', $processedAt];
-
-    if ($state === 'DA_XAC_NHAN') {
-        $events[$event['id']]['state'] = 'DA_GIAI_PHONG';
-        releaseOwnedKeys($roomOccupancy, periodKeys($event['roomId'], $event['date'], $event['start'], $event['end']), 'L', $event['id']);
-        releaseOwnedKeys($lecturerOccupancy, resourceKeys($event['lecturerId'], $event['date'], $event['start'], $event['end']), 'L', $event['id']);
-        releaseOwnedKeys($classOccupancy, resourceKeys($event['classId'], $event['date'], $event['start'], $event['end']), 'L', $event['id']);
+    $previewAllocations = [];
+    foreach ($itemModels as $itemModel) {
+        $product = $itemModel['product'];
+        $priceSnapshot = [];
+        foreach ($itemModel['nights'] as $nightModel) {
+            $priceSnapshot[] = ['date' => $nightModel['date']] + $nightModel['price'];
+        }
+        $policySnapshot = ['policyId' => $product['policyId'], 'timezone' => 'Asia/Ho_Chi_Minh', 'schedule' => $timing === 'PAY_ONLINE' ? [['from' => 'now', 'fee' => $itemModel['total']]] : [['from' => 'now', 'fee' => 0], ['from' => dt($checkin, '00:00:00.000000'), 'feeType' => 'FIRST_NIGHT']]];
+        $previewAllocations[] = [
+            'roomOrder' => $itemModel['order'],
+            'productId' => $product['id'],
+            'roomTypeId' => $product['roomId'],
+            'adults' => $itemModel['adults'],
+            'childAges' => $itemModel['children'],
+            'nightPrices' => $priceSnapshot,
+            'cancellationSnapshot' => $policySnapshot,
+            'paymentSnapshot' => ['timing' => $timing, 'payNow' => $timing === 'PAY_ONLINE' ? $itemModel['total'] : 0, 'payAtProperty' => $timing === 'PAY_AT_PROPERTY' ? $itemModel['total'] : 0],
+        ];
     }
+    $allocationDocument = ['version' => 1, 'rooms' => $previewAllocations];
+    $previewRows[] = [$bookingId, hash('sha256', 'preview-token-' . $bookingId), $customerId, $propertyId, $checkin, $checkout, 'VND', $total, $timing === 'PAY_ONLINE' ? $total : 0, $timing === 'PAY_AT_PROPERTY' ? $total : 0, jsonData($allocationDocument), hash('sha256', jsonData([$propertyId,$checkin,$checkout,$allocationDocument,$total])), 'USED', $expiresAt, $createdAt, $createdAt];
+
+    $confirmedAt = in_array($state, ['CONFIRMED','COMPLETED','NO_SHOW','CANCELLED'], true) ? $createdAt : null;
+    $cancelledAt = $state === 'CANCELLED' ? AS_OF_UTC : null;
+    $completedAt = $state === 'COMPLETED' ? dt($checkout, '05:00:00.000000') : null;
+    $cancellationFee = $state === 'CANCELLED' && $bookingId % 2 === 0 ? (int) round($total * 0.10) : 0;
+    $cancellationRefund = $state === 'CANCELLED' && $timing === 'PAY_ONLINE' ? max(0, $total - $cancellationFee) : 0;
+    $cancelKey = $state === 'CANCELLED' ? uuidFromInt(200000 + $bookingId) : null;
+    $cancelActor = $state === 'CANCELLED' ? $customerId : null;
+    $cancelReason = $state === 'CANCELLED' ? 'Khách thay đổi kế hoạch lưu trú.' : null;
+    $cancelSnapshot = $state === 'CANCELLED' ? jsonData(['version' => 1, 'total' => $total, 'fee' => $cancellationFee, 'refund' => $cancellationRefund, 'calculatedAt' => AS_OF_UTC]) : null;
+    $noShowActor = $state === 'NO_SHOW' ? (($propertyId - 1) % 10) + 2 : null;
+    $noShowAt = $state === 'NO_SHOW' ? dt($checkin, '23:00:00.000000') : null;
+    $noShowFee = $state === 'NO_SHOW' ? $total : 0;
+    $noShowSnapshot = $state === 'NO_SHOW' ? jsonData(['version' => 1, 'feeRate' => 100, 'fee' => $noShowFee, 'inventoryReleased' => true]) : null;
+    $bookingRows[] = [
+        $bookingId, 'BK' . sprintf('%010d', $bookingId), uuidFromInt($bookingId), $bookingId,
+        $customerId, $propertyId, $checkin, $checkout,
+        'Khách hàng ' . sprintf('%04d', (($bookingId - 1) % 500) + 1),
+        'customer' . sprintf('%04d', (($bookingId - 1) % 500) + 1) . '@example.test',
+        '093' . sprintf('%07d', (($bookingId - 1) % 500) + 1),
+        $bookingId % 6 === 0 ? 'Ưu tiên phòng yên tĩnh nếu có thể.' : null,
+        $timing, 'VND', $total, $state, $holdExpiry, $confirmedAt, $completedAt,
+        $cancelKey, $cancelActor, $cancelledAt, $cancelReason, $cancellationFee, $cancellationRefund, $cancelSnapshot,
+        $noShowActor, $noShowAt, $noShowFee, $noShowSnapshot,
+        $createdAt, $createdAt,
+    ];
+
+    foreach ($itemModels as $itemModel) {
+        ++$bookingItemId;
+        $product = $itemModel['product'];
+        $room = $rooms[$product['roomId']];
+        $mealType = $product['mealId'] === 2 ? 'BREAKFAST_INCLUDED' : 'ROOM_ONLY';
+        $conditionSnapshot = ['paymentTiming' => $timing, 'mealType' => $mealType, 'adults' => $itemModel['adults']];
+        $cancelSnapshot = ['policyId' => $product['policyId'], 'timezone' => 'Asia/Ho_Chi_Minh', 'absoluteFeeAtBooking' => $timing === 'PAY_ONLINE' ? $itemModel['total'] : 0];
+        $guests = [];
+        for ($adult = 1; $adult <= $itemModel['adults']; ++$adult) {
+            $guests[] = ['name' => 'Khách lưu trú ' . $bookingId . '-' . $itemModel['order'] . '-' . $adult, 'type' => 'ADULT', 'age' => null];
+        }
+        foreach ($itemModel['children'] as $childAge) {
+            $guests[] = ['name' => 'Trẻ em ' . $bookingId . '-' . $itemModel['order'], 'type' => 'CHILD', 'age' => $childAge];
+        }
+        $bookingItemRows[] = [$bookingItemId, $bookingId, $product['id'], $product['roomId'], $itemModel['order'], $room['name'], $product['variant'] === 1 ? 'Giá linh hoạt' : 'Giá tiết kiệm', $mealType, jsonData($guests), $itemModel['total'], jsonData($conditionSnapshot), jsonData($cancelSnapshot)];
+        foreach ($itemModel['nights'] as $nightModel) {
+            $price = $nightModel['price'];
+            $nightRows[] = [$bookingItemId, $nightModel['date'], $price['base'], $price['discount'], $price['included'], $price['atProperty'], $price['final'], $price['promotionId'], jsonData(['currency' => 'VND', 'rounding' => 'HALF_UP_TO_1_VND'])];
+            ++$ledgerId;
+            $active = $holdsInventory;
+            $releasedAt = $active ? null : ($state === 'COMPLETED' ? dt($checkout, '05:00:00.000000') : AS_OF_UTC);
+            $releaseReason = $active ? null : ($state === 'CANCELLED' ? 'CANCELLED' : ($state === 'PAYMENT_FAILED' ? 'PAYMENT_FAILED' : ($state === 'NO_SHOW' ? 'NO_SHOW' : 'STAY_COMPLETED')));
+            $ledgerRows[] = [$ledgerId, $bookingItemId, $product['roomId'], $nightModel['date'], $active ? 'ACTIVE' : 'RELEASED', $state === 'PENDING_PAYMENT' ? $holdExpiry : null, $createdAt, $releasedAt, $releaseReason];
+        }
+    }
+
+    if ($timing === 'PAY_ONLINE') {
+        $paymentState = $state === 'PENDING_PAYMENT' ? 'PROCESSING' : ($state === 'PAYMENT_FAILED' ? 'FAILED' : 'PAID');
+        $paid = $paymentState === 'PAID' ? $total : 0;
+        $refunded = $state === 'CANCELLED' ? $cancellationRefund : 0;
+        $hasRefund = $refunded > 0;
+        $paymentRows[] = [
+            $bookingId, $bookingId, $timing, $paymentState, $total, $paid, $refunded, 'VND',
+            'MOCK', uuidFromInt(100000 + $bookingId),
+            $paymentState === 'PROCESSING' ? null : 'PAY' . sprintf('%08d', $bookingId),
+            1, $paymentState === 'FAILED' ? 'PAYMENT_DECLINED' : null,
+            $paymentState === 'PROCESSING' ? null : AS_OF_UTC,
+            $hasRefund ? uuidFromInt(300000 + $bookingId) : null,
+            $hasRefund ? 'SUCCEEDED' : 'NONE',
+            $hasRefund ? 'REF' . sprintf('%08d', $bookingId) : null,
+            $hasRefund ? 'Hoàn tiền sau khi hủy đặt chỗ' : null,
+            $hasRefund ? AS_OF_UTC : null,
+            $createdAt, AS_OF_UTC,
+        ];
+    } else {
+        $paymentRows[] = [$bookingId, $bookingId, $timing, 'NOT_TRACKED', $total, 0, 0, 'VND', null, null, null, 0, null, null, null, 'NONE', null, null, null, $createdAt, AS_OF_UTC];
+    }
+
+    ++$auditId;
+    $auditRows[] = [$auditId, $customerId, 'BOOKING_CREATED', 'DatCho', (string) $bookingId, 'REQ-' . sprintf('%08d', $bookingId), null, jsonData(['status' => $state, 'total' => $total]), '127.0.0.1', $createdAt];
+    $bookingModels[$bookingId] = ['propertyId' => $propertyId, 'customerId' => $customerId, 'state' => $state, 'timing' => $timing, 'checkin' => $checkin, 'checkout' => $checkout, 'total' => $total];
 }
 
-$bookingStates = array_merge(
-    array_fill(0, 100, 'TU_DONG_XAC_NHAN'),
-    array_fill(0, 60, 'DA_DUYET'),
-    array_fill(0, 60, 'CHO_DUYET'),
-    array_fill(0, 30, 'BI_TU_CHOI'),
-    array_fill(0, 30, 'DA_HUY'),
-    array_fill(0, 20, 'CAN_BO_TRI_LAI'),
-);
-$bookingRows = [];
-$bookingRoomRows = [];
-$bookingCountByState = [];
-$bookingDates = [];
-for ($date = new DateTimeImmutable('2026-10-05'); $date <= new DateTimeImmutable('2026-12-15'); $date = $date->modify('+1 day')) {
-    $bookingDates[] = $date->format('Y-m-d');
-}
-$bookingBlocks = [[1, 2], [3, 4], [6, 7], [8, 9], [9, 10], [11, 12]];
-
-foreach ($bookingStates as $index => $state) {
-    $bookingId = $index + 1;
-    $lecturerId = ($index % 14) + 1;
-    $sectionId = $lecturerSections[$lecturerId][$index % count($lecturerSections[$lecturerId])];
-    $isTwoRoom = ($bookingId % 25 === 0) && in_array($state, ['DA_DUYET', 'CHO_DUYET'], true);
-    $active = in_array($state, ['TU_DONG_XAC_NHAN', 'DA_DUYET'], true);
-    $purpose = $isTwoRoom ? 'THUC_HANH_HAI_PHONG' : match ($state) {
-        'DA_DUYET', 'CHO_DUYET' => ($bookingId % 2 === 0 ? 'DAY_BU' : 'SU_KIEN'),
-        'BI_TU_CHOI' => 'KHAC',
-        default => ($bookingId % 2 === 0 ? 'HUONG_DAN' : 'HOC_NHOM'),
-    };
-    $roomType = $isTwoRoom ? 'THUC_HANH' : (($bookingId % 8 === 0) ? 'THUC_HANH' : 'LY_THUYET');
-    $candidateRooms = $roomType === 'THUC_HANH' ? $labRoomIds : $theoryRoomIds;
-    $placed = null;
-
-    for ($try = 0; $try < 2000; ++$try) {
-        $date = $bookingDates[($bookingId * 17 + $try * 11) % count($bookingDates)];
-        $dayOfWeek = (int) (new DateTimeImmutable($date))->format('N');
-        if ($state === 'TU_DONG_XAC_NHAN' && $dayOfWeek === 7) {
-            continue;
-        }
-        [$start, $end] = $bookingBlocks[($bookingId + $try) % count($bookingBlocks)];
-        $selectedRooms = $isTwoRoom ? $labRoomIds : [$candidateRooms[($bookingId * 7 + $try) % count($candidateRooms)]];
-        $roomFree = true;
-        foreach ($selectedRooms as $roomId) {
-            if (!keysAreFree($roomOccupancy, periodKeys($roomId, $date, $start, $end))) {
-                $roomFree = false;
-                break;
-            }
-        }
-        if (!$roomFree
-            || !keysAreFree($lecturerOccupancy, resourceKeys($lecturerId, $date, $start, $end))
-            || !keysAreFree($classOccupancy, resourceKeys($sectionId, $date, $start, $end))) {
-            continue;
-        }
-        $placed = compact('date', 'start', 'end', 'selectedRooms');
+// Modifications are audit events in MVP; the current booking remains the source of truth.
+$modificationCount = 0;
+foreach ($bookingModels as $bookingId => $booking) {
+    if ($modificationCount >= 100) {
         break;
     }
-
-    if ($placed === null) {
-        throw new RuntimeException('Không đặt được fixture booking #' . $bookingId);
+    if ($booking['state'] !== 'CONFIRMED' || $booking['timing'] !== 'PAY_AT_PROPERTY') {
+        continue;
     }
-
-    $people = $isTwoRoom ? 60 : ($roomType === 'THUC_HANH' ? 28 : 40 + ($bookingId % 21));
-    $createdAt = '2026-10-04 ' . sprintf('%02d', 8 + ($bookingId % 10)) . ':' . sprintf('%02d', $bookingId % 60) . ':00.000000';
-    $processedBy = in_array($state, ['DA_DUYET', 'BI_TU_CHOI'], true) ? 15 : null;
-    $processedAt = $processedBy === null ? null : '2026-10-04 19:' . sprintf('%02d', $bookingId % 60) . ':00.000000';
-    $reviewReason = in_array($state, ['DA_DUYET', 'CHO_DUYET'], true) ? ($isTwoRoom ? 'TWO_LABS' : 'PURPOSE_REVIEW') : null;
-    $rejectReason = $state === 'BI_TU_CHOI' ? 'Không phù hợp với thứ tự ưu tiên sử dụng phòng' : null;
-    $requirements = $roomType === 'THUC_HANH'
-        ? [['maThietBi' => 'MAY_TINH_SV', 'soLuong' => 30]]
-        : [['maThietBi' => 'MAY_CHIEU', 'soLuong' => 1]];
-
-    $bookingRows[] = [
-        $bookingId, 'PDP' . sprintf('%04d', $bookingId), deterministicUuid($bookingId),
-        1, $lecturerId, $sectionId, $placed['date'], $placed['start'], $placed['end'],
-        $purpose, $people, $roomType, jsonValue($requirements), 'Phiếu dữ liệu tổng hợp #' . $bookingId,
-        $state, $reviewReason, $rejectReason, $processedBy, $processedAt, $createdAt, $createdAt,
-    ];
-    $bookingCountByState[$state] = ($bookingCountByState[$state] ?? 0) + 1;
-
-    if ($isTwoRoom) {
-        $bookingRoomRows[] = [$bookingId, $placed['selectedRooms'][0], 30];
-        $bookingRoomRows[] = [$bookingId, $placed['selectedRooms'][1], 30];
-    } else {
-        $bookingRoomRows[] = [$bookingId, $placed['selectedRooms'][0], $people];
-    }
-
-    if ($active) {
-        foreach ($placed['selectedRooms'] as $roomId) {
-            reserveKeys($roomOccupancy, periodKeys($roomId, $placed['date'], $placed['start'], $placed['end']), ['type' => 'P', 'id' => $bookingId]);
-        }
-        reserveKeys($lecturerOccupancy, resourceKeys($lecturerId, $placed['date'], $placed['start'], $placed['end']), ['type' => 'P', 'id' => $bookingId]);
-        reserveKeys($classOccupancy, resourceKeys($sectionId, $placed['date'], $placed['start'], $placed['end']), ['type' => 'P', 'id' => $bookingId]);
-    }
-}
-
-// Closures are placed only on free room slots in their active state.
-$closureRows = [];
-for ($id = 1; $id <= 15; ++$id) {
-    $state = $id <= 5 ? 'HOAT_DONG' : ($id <= 10 ? 'KET_THUC' : 'DA_HUY');
-    $date = $state === 'KET_THUC' ? '2026-09-' . sprintf('%02d', 8 + $id) : '2026-12-' . sprintf('%02d', 1 + $id);
-    $roomId = (($id * 3) % count($rooms)) + 1;
-    $start = 11;
-    $end = 13;
-    $tries = 0;
-    while ($state === 'HOAT_DONG' && !keysAreFree($roomOccupancy, periodKeys($roomId, $date, $start, $end))) {
-        $roomId = ($roomId % count($rooms)) + 1;
-        if (++$tries > count($rooms)) {
-            throw new RuntimeException('Không bố trí được khoảng khóa phòng.');
-        }
-    }
-    $closureRows[] = [
-        $id, $roomId, $date, $date, $start, $end,
-        $id % 2 === 0 ? 'SU_CO' : 'BAO_TRI',
-        $id % 2 === 0 ? 'KHAN_CAP' : 'KE_HOACH',
-        ($id % 2 === 0 ? 'Xử lý sự cố phòng #' : 'Bảo trì phòng #') . $id, $state, 15,
-        '2026-10-04 07:' . sprintf('%02d', $id) . ':00.000000',
-        $state === 'KET_THUC' ? '2026-10-01 17:00:00.000000' : null,
-    ];
-}
-
-// Build final slot rows from the occupancy map.
-$slotRows = [];
-ksort($roomOccupancy);
-foreach ($roomOccupancy as $key => $owner) {
-    [$roomId, $date, $period] = explode('|', $key);
-    $slotRows[] = [
-        (int) $roomId, $date, (int) $period,
-        $owner['type'] === 'L' ? 'LICH_CHINH_THUC' : 'PHIEU_DAT_PHONG',
-        $owner['type'] === 'L' ? $owner['id'] : null,
-        $owner['type'] === 'P' ? $owner['id'] : null,
-        '2026-10-04 12:00:00.000000',
-    ];
-}
-
-$scheduleRows = [];
-foreach ($events as $event) {
-    $scheduleRows[] = [
-        $event['id'], 1, $event['code'], $event['date'], $event['roomId'], $event['start'], $event['end'],
-        $event['activityType'], $event['classId'], $event['lecturerId'], $event['size'], $event['title'],
-        $event['sessionType'], $event['note'], $event['state'], null,
-    ];
-}
-
-$notificationRows = [];
-$notificationId = 0;
-foreach ($bookingRows as $booking) {
-    ++$notificationId;
-    $notificationRows[] = [$notificationId, $booking[4], 'Cập nhật phiếu ' . $booking[1], 'Phiếu đang ở trạng thái ' . $booking[14], 'PHIEU', $booking[0], $booking[0] % 3 === 0, $booking[19], $booking[0] % 3 === 0 ? $booking[20] : null];
-}
-foreach ($releaseRows as $release) {
-    ++$notificationId;
-    $notificationRows[] = [$notificationId, $release[2], 'Yêu cầu giải phóng lịch', 'Yêu cầu đang ở trạng thái ' . $release[4], 'GIAI_PHONG', $release[0], false, $release[7], null];
-}
-for ($userId = 1; $userId <= 15; ++$userId) {
-    ++$notificationId;
-    $notificationRows[] = [$notificationId, $userId, 'Lịch chính thức đã phát hành', 'Đợt lịch chính thức đã được phát hành.', 'IMPORT', 1, $userId % 2 === 0, '2026-10-04 08:30:00.000000', $userId % 2 === 0 ? '2026-10-04 09:00:00.000000' : null];
-}
-
-$auditRows = [];
-$auditId = 0;
-foreach ($bookingRows as $booking) {
+    ++$modificationCount;
     ++$auditId;
-    $auditRows[] = [$auditId, $booking[4], 'BOOKING_SEEDED', 'PhieuDatPhong', (string) $booking[0], null, jsonValue(['trangThai' => $booking[14]]), '127.0.0.1', $booking[19]];
+    $auditRows[] = [$auditId, $booking['customerId'], 'BOOKING_GUEST_INFO_CHANGED', 'DatCho', (string) $bookingId, 'MOD-' . sprintf('%06d', $modificationCount), jsonData(['guestNote' => null]), jsonData(['guestNote' => 'Cập nhật tên khách ở']), '127.0.0.1', AS_OF_UTC];
 }
-++ $auditId;
-$auditRows[] = [$auditId, 15, 'SCHEDULE_PUBLISHED', 'DotImportLich', '1', null, jsonValue(['soDong' => count($events)]), '127.0.0.1', '2026-10-04 08:30:00.000000'];
-foreach ($releaseRows as $release) {
+
+// 200 waiver requests: 100 approved cancelled, 50 rejected + 50 withdrawn confirmed.
+$waiverId = 0;
+foreach ($bookingModels as $bookingId => $booking) {
+    if ($waiverId >= 200) {
+        break;
+    }
+    $target = null;
+    if ($waiverId < 100 && $booking['state'] === 'CANCELLED') {
+        $target = 'APPROVED';
+    } elseif ($waiverId >= 100 && $booking['state'] === 'CONFIRMED') {
+        $target = $waiverId < 150 ? 'REJECTED' : 'WITHDRAWN';
+    }
+    if ($target === null) {
+        continue;
+    }
+    ++$waiverId;
+    $partnerUserId = (($booking['propertyId'] - 1) % 10) + 2;
+    $waiverRows[] = [$waiverId, $bookingId, $booking['customerId'], 'Đề nghị xem xét miễn phí hủy do thay đổi kế hoạch.', $target, $target === 'WITHDRAWN' ? null : $partnerUserId, $target === 'APPROVED' ? 'Đối tác đồng ý hỗ trợ.' : ($target === 'REJECTED' ? 'Không đủ điều kiện miễn phí hủy.' : null), '2026-10-05 09:00:00.000000', $target === 'WITHDRAWN' ? null : AS_OF_UTC];
     ++$auditId;
-    $auditRows[] = [$auditId, $release[2], 'RELEASE_REQUEST_SEEDED', 'YeuCauGiaiPhongLich', (string) $release[0], null, jsonValue(['trangThai' => $release[4]]), '127.0.0.1', $release[7]];
+    $auditRows[] = [$auditId, $target === 'WITHDRAWN' ? $booking['customerId'] : $partnerUserId, 'CANCELLATION_REQUEST_' . $target, 'YeuCauHuyMienPhi', (string) $waiverId, 'WAIVER-' . sprintf('%06d', $waiverId), null, jsonData(['status' => $target]), '127.0.0.1', AS_OF_UTC];
 }
-foreach ($closureRows as $closure) {
+
+// Reviews for all 800 completed bookings.
+for ($reviewId = 1; $reviewId <= 800; ++$reviewId) {
+    $booking = $bookingModels[$reviewId];
+    $score = 7 + ($reviewId % 4);
+    $reviewRows[] = [$reviewId, $reviewId, $booking['propertyId'], $booking['customerId'], $score, $score, min(10, $score + 1), $score, $score, max(1, $score - 1), $score, 'Kỳ nghỉ thuận tiện, thông tin đặt chỗ rõ ràng.', $reviewId % 20 === 0 ? 'HIDDEN' : 'PUBLISHED', AS_OF_UTC];
     ++$auditId;
-    $auditRows[] = [$auditId, 15, 'ROOM_CLOSURE_SEEDED', 'PhongBiKhoa', (string) $closure[0], null, jsonValue(['trangThai' => $closure[9]]), '127.0.0.1', $closure[11]];
+    $auditRows[] = [$auditId, $booking['customerId'], 'REVIEW_CREATED', 'DanhGia', (string) $reviewId, 'REVIEW-' . sprintf('%06d', $reviewId), null, jsonData(['score' => $score]), '127.0.0.1', AS_OF_UTC];
+}
+for ($propertyId = 1; $propertyId <= 30; ++$propertyId) {
+    ++$auditId;
+    $auditRows[] = [$auditId, (($propertyId - 1) % 10) + 2, 'PROPERTY_SEEDED', 'CoSoLuuTru', (string) $propertyId, null, null, jsonData(['status' => $properties[$propertyId]['state']]), '127.0.0.1', AS_OF_UTC];
 }
 
-$currentHash = hash_file('sha256', $currentCsvPath);
-$operationalSql = "-- Trạng thái vận hành sau khi official_schedule.csv đã được phát hành.\n";
-$operationalSql .= "USE room_booking;\nSET NAMES utf8mb4;\nSET FOREIGN_KEY_CHECKS = 1;\nSTART TRANSACTION;\n\n";
-$operationalSql .= sqlInsert('DotImportLich', ['DotImportLichID', 'HocKyID', 'TenTep', 'MaBamSHA256', 'TrangThai', 'SoDong', 'SoDongLoi', 'BaoCaoLoiJSON', 'NguoiTaiID', 'TaiLenLuc', 'PhatHanhLuc'], [[1, 1, 'official_schedule.csv', $currentHash, 'DA_PHAT_HANH', count($events), 0, jsonValue([]), 15, '2026-10-04 08:00:00.000000', '2026-10-04 08:30:00.000000']]);
-$operationalSql .= sqlInsert('LichChinhThuc', ['LichChinhThucID', 'DotImportLichID', 'MaDong', 'Ngay', 'PhongID', 'TietBatDau', 'TietKetThuc', 'LoaiHoatDong', 'LopHocPhanID', 'GiangVienID', 'SiSo', 'TenHoatDong', 'LoaiBuoi', 'GhiChu', 'TrangThai', 'LyDoCanBoTriLai'], $scheduleRows);
-$operationalSql .= sqlInsert('PhieuDatPhong', ['PhieuDatPhongID', 'MaPhieu', 'MaGui', 'HocKyID', 'NguoiYeuCauID', 'LopHocPhanID', 'Ngay', 'TietBatDau', 'TietKetThuc', 'MucDich', 'SoNguoi', 'LoaiPhongYeuCau', 'YeuCauThietBiJSON', 'GhiChu', 'TrangThai', 'LyDoChuyenDuyet', 'LyDoTuChoi', 'NguoiXuLyID', 'XuLyLuc', 'TaoLuc', 'CapNhatLuc'], $bookingRows);
-$operationalSql .= sqlInsert('PhieuDatPhongPhong', ['PhieuDatPhongID', 'PhongID', 'SoNguoiDuKien'], $bookingRoomRows);
-$operationalSql .= sqlInsert('SlotPhong', ['PhongID', 'Ngay', 'SoTiet', 'LoaiNguon', 'LichChinhThucID', 'PhieuDatPhongID', 'TaoLuc'], $slotRows);
-$operationalSql .= sqlInsert('YeuCauGiaiPhongLich', ['YeuCauGiaiPhongLichID', 'LichChinhThucID', 'NguoiYeuCauID', 'LyDo', 'TrangThai', 'NguoiXuLyID', 'LyDoXuLy', 'TaoLuc', 'XuLyLuc'], $releaseRows);
-$operationalSql .= sqlInsert('PhongBiKhoa', ['PhongBiKhoaID', 'PhongID', 'TuNgay', 'DenNgay', 'TietBatDau', 'TietKetThuc', 'Loai', 'MucDo', 'LyDo', 'TrangThai', 'NguoiTaoID', 'TaoLuc', 'KetThucLuc'], $closureRows);
-$operationalSql .= sqlInsert('ThongBao', ['ThongBaoID', 'NguoiNhanID', 'TieuDe', 'NoiDung', 'LoaiDoiTu', 'DoiTuID', 'DaDoc', 'TaoLuc', 'DocLuc'], $notificationRows);
-$operationalSql .= sqlInsert('NhatKyHeThong', ['NhatKyHeThongID', 'NguoiThucHienID', 'HanhDong', 'LoaiDoiTu', 'DoiTuID', 'DuLieuTruocJSON', 'DuLieuSauJSON', 'DiaChiIP', 'TaoLuc'], $auditRows);
-$operationalSql .= "UPDATE HocKy SET DotImportHienHanhID = 1, TrangThai = 'MO_DAT_PHONG' WHERE HocKyID = 1;\n\nCOMMIT;\n";
-writeText($seedDir . '/005_operational.sql', $operationalSql);
+// Daily inventory and prices, now with counters derived from active ledger.
+$inventoryRows = $dailyRateRows = [];
+$inventoryStart = '2026-10-05';
+foreach ($rooms as $currentRoomId => $room) {
+    for ($offset = 0; $offset < INVENTORY_DAYS; ++$offset) {
+        $date = datePlus($inventoryStart, $offset);
+        $key = $currentRoomId . '|' . $date;
+        $inventoryRows[] = [$currentRoomId, $date, roomInventory($room['roomIndex']), $reserved[$key] ?? 0, 1, AS_OF_UTC];
+    }
+}
+foreach ($products as $currentProductId => $product) {
+    for ($offset = 0; $offset < INVENTORY_DAYS; ++$offset) {
+        $date = datePlus($inventoryStart, $offset);
+        $dailyRateRows[] = [
+            $currentProductId,
+            $date,
+            basePrice($product['propertyId'], $product['roomIndex'], $product['variant'], $date),
+            isClosedDay($product['roomId'], $offset),
+            1,
+            $product['timing'] === 'PAY_ONLINE' ? 10 : 14,
+            0,
+            1,
+            AS_OF_UTC,
+        ];
+    }
+}
+$sql = "-- Daily inventory and prices for a 180-day development horizon.\nUSE hotel_booking;\nSET NAMES utf8mb4;\nSTART TRANSACTION;\n\n";
+$sql .= sqlInsert('TonPhongNgay', ['LoaiPhongID','NgayLuuTru','TongSoLuong','SoLuongDaGiu','PhienBan','CapNhatLuc'], $inventoryRows);
+$sql .= sqlInsert('GiaPhongNgay', ['SanPhamPhongID','NgayLuuTru','GiaCoBan','DongBan','SoDemToiThieu','SoDemToiDa','SoNgayDatTruoc','PhienBan','CapNhatLuc'], $dailyRateRows);
+$sql .= "COMMIT;\n";
+writeText($seedDir . '/005_inventory_prices.sql', $sql);
 
-// -----------------------------------------------------------------------------
-// 7. Intentionally invalid CSV fixtures
-// -----------------------------------------------------------------------------
-
-$base = csvRow(array_values(array_filter($events, static fn (array $event): bool => $event['activityType'] === 'LICH_HOC'))[0]);
-$second = csvRow(array_values(array_filter($events, static fn (array $event): bool => $event['activityType'] === 'LICH_HOC'))[1]);
-
-writeCsv($invalidDir . '/invalid_header.csv', array_slice(CSV_HEADER, 0, -1), [array_slice($base, 0, -1)]);
-
-$roomConflictA = $base;
-$roomConflictB = $second;
-$roomConflictA[1] = 'ERR_ROOM_001';
-$roomConflictB[1] = 'ERR_ROOM_002';
-$roomConflictB[3] = $roomConflictA[3];
-$roomConflictB[4] = $roomConflictA[4];
-$roomConflictB[5] = $roomConflictA[5];
-$roomConflictB[6] = $roomConflictA[6];
-writeCsv($invalidDir . '/room_conflict.csv', CSV_HEADER, [$roomConflictA, $roomConflictB]);
-
-$lecturerConflictA = $base;
-$lecturerConflictB = $second;
-$lecturerConflictA[1] = 'ERR_LECTURER_001';
-$lecturerConflictB[1] = 'ERR_LECTURER_002';
-$lecturerConflictB[3] = $lecturerConflictA[3];
-$lecturerConflictB[5] = $lecturerConflictA[5];
-$lecturerConflictB[6] = $lecturerConflictA[6];
-$lecturerConflictB[9] = $lecturerConflictA[9];
-$lecturerConflictB[4] = $lecturerConflictA[4] === 'G2.101' ? 'G2.102' : 'G2.101';
-$lecturerConflictB[8] = 'LHP2026015';
-writeCsv($invalidDir . '/lecturer_conflict.csv', CSV_HEADER, [$lecturerConflictA, $lecturerConflictB]);
-
-$classConflictA = $base;
-$classConflictB = $base;
-$classConflictA[1] = 'ERR_CLASS_001';
-$classConflictB[1] = 'ERR_CLASS_002';
-$classConflictB[4] = $classConflictA[4] === 'G2.101' ? 'G2.102' : 'G2.101';
-$classConflictB[9] = 'GV002';
-writeCsv($invalidDir . '/class_conflict.csv', CSV_HEADER, [$classConflictA, $classConflictB]);
-
-$capacityRow = $base;
-$capacityRow[1] = 'ERR_CAPACITY_001';
-$capacityRow[4] = 'G2.101';
-$capacityRow[10] = '100';
-writeCsv($invalidDir . '/capacity_exceeded.csv', CSV_HEADER, [$capacityRow]);
-
-$assignmentRow = $base;
-$assignmentRow[1] = 'ERR_ASSIGNMENT_001';
-$assignmentRow[9] = 'GV999';
-writeCsv($invalidDir . '/assignment_missing.csv', CSV_HEADER, [$assignmentRow]);
-
-// -----------------------------------------------------------------------------
-// 8. Manifest
-// -----------------------------------------------------------------------------
+$sql = "-- Preview, booking, inventory ledger, payment, cancellation and review fixtures.\nUSE hotel_booking;\nSET NAMES utf8mb4;\nSTART TRANSACTION;\n\n";
+$sql .= sqlInsert('XemTruocDatCho', ['XemTruocDatChoID','TokenHash','KhachHangID','CoSoLuuTruID','NgayNhanPhong','NgayTraPhong','TienTe','TongTien','SoTienTraNgay','SoTienTraTaiCoSo','PhanBoJSON','Fingerprint','TrangThai','HetHanLuc','TaoLuc','DaDungLuc'], $previewRows);
+$sql .= sqlInsert('DatCho', ['DatChoID','MaDatCho','ClientRequestID','XemTruocDatChoID','KhachHangID','CoSoLuuTruID','NgayNhanPhong','NgayTraPhong','TenNguoiDat','EmailNguoiDat','DienThoaiNguoiDat','YeuCauDacBiet','ThoiDiemThanhToan','TienTe','TongTien','TrangThai','HetHanThanhToanLuc','XacNhanLuc','HoanThanhLuc','HuyIdempotencyKey','NguoiHuyID','HuyLuc','LyDoHuy','PhiHuy','SoTienHoan','TinhHuySnapshotJSON','NguoiDanhDauNoShowID','NoShowLuc','PhiNoShow','NoShowSnapshotJSON','TaoLuc','CapNhatLuc'], $bookingRows);
+$sql .= sqlInsert('HangMucDatCho', ['HangMucDatChoID','DatChoID','SanPhamPhongID','LoaiPhongID','ThuTuPhong','TenLoaiPhongSnapshot','TenSanPhamSnapshot','LoaiBuaAnSnapshot','KhachJSON','TongTien','SnapshotDieuKienJSON','SnapshotHuyJSON'], $bookingItemRows);
+$sql .= sqlInsert('GiaDemDatCho', ['HangMucDatChoID','NgayLuuTru','GiaCoBan','TienGiam','ThuePhiDaGom','ThuePhiTaiCoSo','ThanhTien','KhuyenMaiID','SnapshotJSON'], $nightRows);
+$sql .= sqlInsert('GiuTonPhongDem', ['GiuTonPhongDemID','HangMucDatChoID','LoaiPhongID','NgayLuuTru','TrangThai','HetHanLuc','GiuLuc','NhaLuc','LyDoNha'], $ledgerRows);
+$sql .= sqlInsert('ThanhToan', ['ThanhToanID','DatChoID','ThoiDiemThanhToan','TrangThai','TongPhaiTra','DaThanhToan','DaHoan','TienTe','Provider','IdempotencyKey','ProviderReference','SoLanThu','MaLoiCuoi','XuLyLuc','HoanTienIdempotencyKey','TrangThaiHoanTien','ProviderRefundReference','LyDoHoanTien','HoanTienHoanTatLuc','TaoLuc','CapNhatLuc'], $paymentRows);
+$sql .= sqlInsert('YeuCauHuyMienPhi', ['YeuCauHuyMienPhiID','DatChoID','NguoiYeuCauID','LyDo','TrangThai','NguoiXuLyID','PhanHoi','TaoLuc','XuLyLuc'], $waiverRows);
+$sql .= sqlInsert('DanhGia', ['DanhGiaID','DatChoID','CoSoLuuTruID','KhachHangID','DiemTong','DiemSachSe','DiemViTri','DiemNhanVien','DiemThoaiMai','DiemTienNghi','DiemDangTien','BinhLuan','TrangThai','TaoLuc'], $reviewRows);
+$sql .= sqlInsert('NhatKyHeThong', ['NhatKyHeThongID','NguoiThucHienID','HanhDong','LoaiDoiTu','DoiTuID','RequestID','DuLieuTruocJSON','DuLieuSauJSON','DiaChiIP','TaoLuc'], $auditRows);
+$sql .= "COMMIT;\n";
+writeText($seedDir . '/006_operational.sql', $sql);
 
 $generatedFiles = [
     'database/seeds/001_reference.sql',
-    'database/seeds/002_facilities.sql',
-    'database/seeds/003_lecturers.sql',
-    'database/seeds/004_academic.sql',
-    'database/seeds/005_operational.sql',
-    'database/fixtures/csv/valid/official_schedule.csv',
-    'database/fixtures/csv/valid/official_schedule_replacement.csv',
-    'database/fixtures/csv/invalid/invalid_header.csv',
-    'database/fixtures/csv/invalid/room_conflict.csv',
-    'database/fixtures/csv/invalid/lecturer_conflict.csv',
-    'database/fixtures/csv/invalid/class_conflict.csv',
-    'database/fixtures/csv/invalid/capacity_exceeded.csv',
-    'database/fixtures/csv/invalid/assignment_missing.csv',
+    'database/seeds/002_accounts_partners.sql',
+    'database/seeds/003_properties.sql',
+    'database/seeds/004_products_policies.sql',
+    'database/seeds/005_inventory_prices.sql',
+    'database/seeds/006_operational.sql',
 ];
 $hashes = [];
 foreach ($generatedFiles as $relativePath) {
     $hashes[$relativePath] = hash_file('sha256', $root . '/' . $relativePath);
 }
-
+$counts = [
+    'facilities' => count($facilityRows),
+    'users' => count($userRows), 'partnerOrganizations' => count($organizationRows), 'properties' => count($propertyRows),
+    'roomTypes' => count($roomRows), 'roomProducts' => count($productRows), 'dailyInventory' => count($inventoryRows),
+    'dailyPrices' => count($dailyRateRows), 'previews' => count($previewRows), 'bookings' => count($bookingRows), 'bookingItems' => count($bookingItemRows),
+    'nightPriceSnapshots' => count($nightRows), 'inventoryLedgerRows' => count($ledgerRows), 'payments' => count($paymentRows),
+    'cancellationRequests' => count($waiverRows), 'reviews' => count($reviewRows), 'promotions' => count($promotionRows),
+    'auditRows' => count($auditRows), 'googlePlacesMatches' => 0,
+];
 $manifest = [
-    'dataset' => 'NTU_CNTT_ROOM_BOOKING',
+    'dataset' => 'ACCOMMODATION_BOOKING_DEVELOPMENT',
     'seed' => DATA_SEED,
-    'generatedAt' => '2026-10-04T12:00:00+07:00',
+    'asOfUtc' => AS_OF_UTC,
     'databaseTarget' => ['MySQL 8.x', 'MariaDB 10.4.x'],
-    'counts' => [
-        'tables' => 20,
-        'buildings' => count($buildings),
-        'rooms' => count($rooms),
-        'equipmentTypes' => count($devices),
-        'activeLecturers' => count($lecturers),
-        'studentGroups' => count($studentGroups),
-        'courses' => count($courses),
-        'courseSections' => count($sections),
-        'officialScheduleRows' => count($events),
-        'internalScheduleRows' => count(array_filter($events, static fn (array $event): bool => $event['activityType'] !== 'BAN_NGOAI_KHOA')),
-        'externalBusyRows' => $externalCount,
-        'roomSlots' => count($slotRows),
-        'bookings' => count($bookingRows),
-        'bookingsByState' => $bookingCountByState,
-        'releaseRequests' => count($releaseRows),
-        'roomClosures' => count($closureRows),
-        'notifications' => count($notificationRows),
-        'auditRows' => count($auditRows),
-        'replacementChangedRows' => $moved,
-    ],
+    'tableCount' => 22,
+    'syntheticData' => true,
+    'counts' => $counts,
     'assumptions' => [
-        'Dữ liệu được tổng hợp để phát triển và chưa phải dữ liệu vận hành chính thức của trường.',
-        'Khung giờ dùng đúng bảng 13 tiết hiện có; mâu thuẫn tiết 3+8/3+9 chưa được xác nhận.',
-        'Tuần 8 không xếp buổi học thường; tuần 13 dùng cho lịch thi.',
-        'NĐN.101 và NĐN.102 là hai phòng thực hành 30 chỗ.',
-        'Các khoảng BAN_NGOAI_KHOA chỉ là occupancy tổng hợp để tăng độ phủ dữ liệu.',
+        'Phạm vi địa lý chỉ gồm Thành phố Hồ Chí Minh.',
+        'Tên của 30 cơ sở lấy từ workbook Sở Du lịch; địa chỉ là dữ liệu đối chiếu từ nguồn công khai; tọa độ chưa được nhập.',
+        'Google Places mới được chuẩn bị bằng ba cột metadata trên cơ sở; chưa gọi API và chưa có mã địa điểm.',
+        'Loại phòng, giá, tồn phòng, đơn đặt chỗ và đánh giá là dữ liệu tổng hợp để phát triển.',
+        'VND là tiền tệ duy nhất; trẻ em chiếm sức chứa nhưng chưa có giá riêng.',
+        'Khoảng tồn phòng bắt đầu 2026-10-05 và kéo dài 180 ngày.',
+    ],
+    'sourceFiles' => [
+        'database/source/hcmc_accommodations_verified.csv' => hash_file('sha256', $root . '/database/source/hcmc_accommodations_verified.csv'),
     ],
     'files' => $hashes,
 ];
-writeText($fixtureDir . '/data-manifest.json', jsonValue($manifest) . PHP_EOL);
+writeText($fixtureDir . '/data-manifest.json', jsonData($manifest) . PHP_EOL);
 
-echo "Đã sinh bộ dữ liệu phát triển.\n";
-foreach ($manifest['counts'] as $name => $count) {
-    echo str_pad($name, 28) . ': ' . (is_array($count) ? jsonValue($count) : $count) . "\n";
+echo "Đã sinh dữ liệu accommodation booking.\n";
+foreach ($counts as $name => $count) {
+    echo str_pad($name, 28) . ': ' . $count . PHP_EOL;
 }

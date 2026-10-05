@@ -1,0 +1,31 @@
+property_id,source_row,source_name,verified_name,address,match_type,checked_at
+1,10,SILVERLAND YEN,Silverland Yen Hotel,"73-75 Thủ Khoa Huân, Thành phố Hồ Chí Minh",KHOP_CHINH_XAC,2026-10-05
+2,154,KHÁCH SẠN THE MYST ĐỒNG KHỞI,The Myst Dong Khoi,"6-8 Hồ Huấn Nghiệp, Thành phố Hồ Chí Minh",KHOP_CHINH_XAC,2026-10-05
+3,162,LIBERTY CENTRAL SAIGON RIVERSIDE,Liberty Central Saigon Riverside,"17 Tôn Đức Thắng, Thành phố Hồ Chí Minh",KHOP_CHINH_XAC,2026-10-05
+4,164,LIBERTY CENTRAL SAIGON CENTRE,Liberty Central Saigon Centre,"179 Lê Thánh Tôn, Thành phố Hồ Chí Minh",KHOP_CHINH_XAC,2026-10-05
+5,166,KHÁCH SẠN LIBERTY CENTRAL SAIGON CITYPOINT,Liberty Central Saigon Citypoint,"59 Pasteur, Thành phố Hồ Chí Minh",KHOP_CHINH_XAC,2026-10-05
+6,167,KHÁCH SẠN CENTRAL PALACE,Central Palace Hotel,"39-39A Nguyễn Trung Trực, Thành phố Hồ Chí Minh",KHOP_CHINH_XAC,2026-10-05
+7,173,KHÁCH SẠN RAMANA SÀI GÒN,Ramana Saigon Hotel,"323 Lê Văn Sỹ, Thành phố Hồ Chí Minh",KHOP_CHINH_XAC,2026-10-05
+8,176,KHÁCH SẠN VISSAI SÀI GÒN,Vissai Saigon Hotel,"144 Nguyễn Văn Trỗi, Thành phố Hồ Chí Minh",KHOP_CHINH_XAC,2026-10-05
+9,177,KHÁCH SẠN ĐỆ NHẤT,First Hotel,"18 Hoàng Việt, Thành phố Hồ Chí Minh",KHOP_TEN_CU_BIET_DANH,2026-10-05
+10,180,KHÁCH SẠN MAI HOUSE SAIGON,Mai House Saigon Hotel,"157 Nam Kỳ Khởi Nghĩa, Thành phố Hồ Chí Minh",KHOP_CHINH_XAC,2026-10-05
+11,181,KHÁCH SẠN ĐỒNG KHỞI (GRAND HOTEL),Hotel Grand Saigon,"8 Đồng Khởi, Thành phố Hồ Chí Minh",KHOP_TEN_CU_BIET_DANH,2026-10-05
+12,182,KHÁCH SẠN BẾN THÀNH (REX),Rex Hotel Saigon,"141 Nguyễn Huệ, Thành phố Hồ Chí Minh",KHOP_TEN_CU_BIET_DANH,2026-10-05
+13,183,KHÁCH SẠN RENAISSANCE RIVERSIDE HOTEL SAIGON,Renaissance Riverside Hotel Saigon,"8-15 Tôn Đức Thắng, Thành phố Hồ Chí Minh",KHOP_CHINH_XAC,2026-10-05
+14,184,KHÁCH SẠN SHERATON,Sheraton Saigon Grand Opera Hotel,"88 Đồng Khởi, Thành phố Hồ Chí Minh",KHOP_CHINH_XAC,2026-10-05
+15,185,KHÁCH SẠN NEW WORLD,New World Saigon Hotel,"76 Lê Lai, Thành phố Hồ Chí Minh",KHOP_CHINH_XAC,2026-10-05
+16,186,KHÁCH SẠN CỬU LONG (MAJESTIC),Hotel Majestic Saigon,"1 Đồng Khởi, Thành phố Hồ Chí Minh",KHOP_TEN_CU_BIET_DANH,2026-10-05
+17,187,KHÁCH SẠN SOFITEL PLAZA,Sofitel Saigon Plaza,"17 Lê Duẩn, Thành phố Hồ Chí Minh",KHOP_CHINH_XAC,2026-10-05
+18,189,KHÁCH SẠN LOTTE LEGEND,Lotte Hotel Saigon,"2A-4A Tôn Đức Thắng, Thành phố Hồ Chí Minh",KHOP_TEN_CU_BIET_DANH,2026-10-05
+19,190,KHÁCH SẠN PULLMAN SAIGON CENTRE,Pullman Saigon Centre,"148 Trần Hưng Đạo, Thành phố Hồ Chí Minh",KHOP_CHINH_XAC,2026-10-05
+20,191,KHÁCH SẠN PARK HYATT,Park Hyatt Saigon,"2 Công Trường Lam Sơn, Thành phố Hồ Chí Minh",KHOP_CHINH_XAC,2026-10-05
+21,192,KHÁCH SẠN CARAVELLE,Caravelle Saigon,"19-23 Công Trường Lam Sơn, Thành phố Hồ Chí Minh",KHOP_CHINH_XAC,2026-10-05
+22,193,KHÁCH SẠN NIKKO SAIGON,Hotel Nikko Saigon,"235 Nguyễn Văn Cừ, Thành phố Hồ Chí Minh",KHOP_CHINH_XAC,2026-10-05
+23,194,KHÁCH SẠN THE REVERIE SAIGON,The Reverie Saigon Hotel,"22-36 Nguyễn Huệ, Thành phố Hồ Chí Minh",KHOP_CHINH_XAC,2026-10-05
+24,195,LE MERIDIEN SAIGON,Le Méridien Saigon,"3C Tôn Đức Thắng, Thành phố Hồ Chí Minh",KHOP_CHINH_XAC,2026-10-05
+25,196,KHÁCH SẠN LA VELA SG,La Vela Saigon Hotel,"280 Nam Kỳ Khởi Nghĩa, Thành phố Hồ Chí Minh",KHOP_CHINH_XAC,2026-10-05
+26,197,KHÁCH SẠN HOTEL DES ARTS SAIGON,Hôtel des Arts Saigon - MGallery Collection,"76-78 Nguyễn Thị Minh Khai, Thành phố Hồ Chí Minh",KHOP_CHINH_XAC,2026-10-05
+27,199,"THƯƠNG MẠI AN ĐÔNG (WINDSOR PLAZA HOTEL)",Windsor Plaza Hotel,"18 An Dương Vương, Thành phố Hồ Chí Minh",KHOP_TEN_CU_BIET_DANH,2026-10-05
+28,100,SILVERLAND MIN,Silverland Min Hotel,"81 Hai Bà Trưng, Thành phố Hồ Chí Minh",KHOP_CHINH_XAC,2026-10-05
+29,134,KHÁCH SẠN VIỄN ĐÔNG,Vien Dong Hotel,"275A Phạm Ngũ Lão, Thành phố Hồ Chí Minh",KHOP_CHINH_XAC,2026-10-05
+30,157,KHÁCH SẠN CONTINENTAL,Hotel Continental Saigon,"132-134 Đồng Khởi, Thành phố Hồ Chí Minh",KHOP_CHINH_XAC,2026-10-05

@@ -2,214 +2,145 @@
 
 declare(strict_types=1);
 
-const EXPECTED_HEADER = [
-    'SchemaVersion', 'MaDong', 'MaHocKy', 'Ngay', 'MaPhong', 'TietBatDau',
-    'TietKetThuc', 'LoaiHoatDong', 'MaLopHocPhan', 'MaGiangVien', 'SiSo',
-    'TenHoatDong', 'LoaiBuoi', 'GhiChu',
-];
-
 $root = dirname(__DIR__, 2);
 $manifestPath = $root . '/database/fixtures/data-manifest.json';
 $errors = [];
 
-function fail(array &$errors, string $message): void
-{
-    $errors[] = $message;
-}
-
-function readCsvFile(string $path): array
-{
-    $handle = fopen($path, 'rb');
-    if ($handle === false) {
-        throw new RuntimeException('Không mở được CSV: ' . $path);
-    }
-
-    try {
-        $header = fgetcsv($handle, 0, ',', '"', '');
-        if ($header === false) {
-            throw new RuntimeException('CSV rỗng: ' . $path);
-        }
-        $header[0] = preg_replace('/^\xEF\xBB\xBF/', '', (string) $header[0]);
-        $rows = [];
-        while (($row = fgetcsv($handle, 0, ',', '"', '')) !== false) {
-            if ($row === [null] || $row === []) {
-                continue;
-            }
-            $rows[] = $row;
-        }
-        return [$header, $rows];
-    } finally {
-        fclose($handle);
-    }
-}
-
-function validateSchedule(string $path, int $expectedRows, array &$errors): array
-{
-    [$header, $rows] = readCsvFile($path);
-    if ($header !== EXPECTED_HEADER) {
-        fail($errors, basename($path) . ': header không đúng contract.');
-        return [];
-    }
-    if (count($rows) !== $expectedRows) {
-        fail($errors, basename($path) . ': số dòng ' . count($rows) . ', kỳ vọng ' . $expectedRows . '.');
-    }
-
-    $byCode = [];
-    $roomSlots = [];
-    $lecturerSlots = [];
-    $classSlots = [];
-
-    foreach ($rows as $lineIndex => $row) {
-        $line = $lineIndex + 2;
-        if (count($row) !== count(EXPECTED_HEADER)) {
-            fail($errors, basename($path) . ": dòng {$line} không đủ 14 cột.");
-            continue;
-        }
-        [$version, $code, $term, $date, $room, $startRaw, $endRaw, $activity, $class, $lecturer, $size] = $row;
-        if ($version !== '1' || $term !== '2026-HK1') {
-            fail($errors, basename($path) . ": dòng {$line} sai schema/học kỳ.");
-        }
-        if (isset($byCode[$code])) {
-            fail($errors, basename($path) . ": trùng MaDong {$code}.");
-        }
-        $byCode[$code] = $row;
-        if (!preg_match('/^2026-\d{2}-\d{2}$/', $date) || $date < '2026-09-05' || $date > '2026-12-20') {
-            fail($errors, basename($path) . ": dòng {$line} có ngày ngoài học kỳ.");
-        }
-        $start = filter_var($startRaw, FILTER_VALIDATE_INT);
-        $end = filter_var($endRaw, FILTER_VALIDATE_INT);
-        if ($start === false || $end === false || $start < 1 || $end > 13 || $start > $end) {
-            fail($errors, basename($path) . ": dòng {$line} có khoảng tiết sai.");
-            continue;
-        }
-        if ($activity === 'LICH_HOC' && ($class === '' || $lecturer === '' || $size === '')) {
-            fail($errors, basename($path) . ": dòng {$line} thiếu dữ liệu lịch học.");
-        }
-        for ($period = $start; $period <= $end; ++$period) {
-            $roomKey = $room . '|' . $date . '|' . $period;
-            if (isset($roomSlots[$roomKey])) {
-                fail($errors, basename($path) . ": trùng phòng tại {$roomKey} ({$roomSlots[$roomKey]} và {$code}).");
-            }
-            $roomSlots[$roomKey] = $code;
-
-            if ($lecturer !== '') {
-                $lecturerKey = $lecturer . '|' . $date . '|' . $period;
-                if (isset($lecturerSlots[$lecturerKey])) {
-                    fail($errors, basename($path) . ": trùng giảng viên tại {$lecturerKey}.");
-                }
-                $lecturerSlots[$lecturerKey] = $code;
-            }
-            if ($class !== '') {
-                $classKey = $class . '|' . $date . '|' . $period;
-                if (isset($classSlots[$classKey])) {
-                    fail($errors, basename($path) . ": trùng lớp tại {$classKey}.");
-                }
-                $classSlots[$classKey] = $code;
-            }
-        }
-    }
-
-    return $byCode;
-}
-
 if (!is_file($manifestPath)) {
     throw new RuntimeException('Chưa có data-manifest.json. Hãy chạy generate_data.php trước.');
 }
-$manifest = json_decode((string) file_get_contents($manifestPath), true, 512, JSON_THROW_ON_ERROR);
 
-foreach ($manifest['files'] as $relativePath => $expectedHash) {
+$manifest = json_decode((string) file_get_contents($manifestPath), true, 512, JSON_THROW_ON_ERROR);
+$requiredFiles = [
+    'database/migrations/001_create_schema.sql',
+    'database/source/hcmc_accommodations_verified.csv',
+    'database/seeds/001_reference.sql',
+    'database/seeds/002_accounts_partners.sql',
+    'database/seeds/003_properties.sql',
+    'database/seeds/004_products_policies.sql',
+    'database/seeds/005_inventory_prices.sql',
+    'database/seeds/006_operational.sql',
+];
+
+foreach ($requiredFiles as $relativePath) {
     $path = $root . '/' . $relativePath;
     if (!is_file($path)) {
-        fail($errors, 'Thiếu tệp: ' . $relativePath);
+        $errors[] = 'Thiếu file: ' . $relativePath;
         continue;
     }
-    $actualHash = hash_file('sha256', $path);
-    if (!hash_equals($expectedHash, $actualHash)) {
-        fail($errors, 'SHA-256 không khớp: ' . $relativePath);
+    $expectedHash = $manifest['files'][$relativePath] ?? $manifest['sourceFiles'][$relativePath] ?? null;
+    if ($relativePath !== 'database/migrations/001_create_schema.sql') {
+        $actualHash = hash_file('sha256', $path);
+        if ($expectedHash !== $actualHash) {
+            $errors[] = 'Hash không khớp: ' . $relativePath;
+        }
+    }
+    $contents = (string) file_get_contents($path);
+    if (stripos($contents, 'room_booking') !== false || stripos($contents, 'SlotPhong') !== false || stripos($contents, 'LichChinhThuc') !== false) {
+        $errors[] = 'Còn thuật ngữ hệ thống cũ trong: ' . $relativePath;
     }
 }
 
-$requiredSql = [
-    'database/migrations/001_create_schema.sql',
-    'database/seeds/001_reference.sql',
-    'database/seeds/002_facilities.sql',
-    'database/seeds/003_lecturers.sql',
-    'database/seeds/004_academic.sql',
-    'database/seeds/005_operational.sql',
+$sourceCsvPath = $root . '/database/source/hcmc_accommodations_verified.csv';
+if (is_file($sourceCsvPath)) {
+    $expectedHeaders = ['property_id', 'source_row', 'source_name', 'verified_name', 'address', 'match_type', 'checked_at'];
+    $handle = fopen($sourceCsvPath, 'rb');
+    if ($handle === false) {
+        $errors[] = 'Không mở được CSV nguồn để kiểm tra.';
+    } else {
+        try {
+            $headers = fgetcsv($handle);
+            if ($headers !== $expectedHeaders) {
+                $errors[] = 'Tiêu đề CSV nguồn không đúng cấu trúc quy định.';
+            } else {
+                $rowNumber = 1;
+                $propertyIds = [];
+                $sourceRows = [];
+                while (($values = fgetcsv($handle)) !== false) {
+                    ++$rowNumber;
+                    if (count($values) !== count($headers)) {
+                        $errors[] = 'Sai số cột tại dòng CSV ' . $rowNumber . '.';
+                        continue;
+                    }
+                    $row = array_combine($headers, $values);
+                    $propertyId = filter_var($row['property_id'], FILTER_VALIDATE_INT);
+                    $sourceRow = filter_var($row['source_row'], FILTER_VALIDATE_INT);
+                    if ($propertyId === false || $propertyId < 1 || $propertyId > 30 || isset($propertyIds[$propertyId])) {
+                        $errors[] = 'Mã cơ sở không hợp lệ hoặc bị trùng tại dòng CSV ' . $rowNumber . '.';
+                    } else {
+                        $propertyIds[$propertyId] = true;
+                    }
+                    if ($sourceRow === false || $sourceRow < 2 || isset($sourceRows[$sourceRow])) {
+                        $errors[] = 'Số dòng Excel không hợp lệ hoặc bị trùng tại dòng CSV ' . $rowNumber . '.';
+                    } else {
+                        $sourceRows[$sourceRow] = true;
+                    }
+                    foreach (['source_name', 'verified_name', 'address'] as $requiredColumn) {
+                        if (trim($row[$requiredColumn]) === '') {
+                            $errors[] = 'Thiếu ' . $requiredColumn . ' tại dòng CSV ' . $rowNumber . '.';
+                        }
+                    }
+                    if (!str_contains($row['address'], 'Thành phố Hồ Chí Minh')) {
+                        $errors[] = 'Địa chỉ ngoài Thành phố Hồ Chí Minh tại dòng CSV ' . $rowNumber . '.';
+                    }
+                    if (!in_array($row['match_type'], ['KHOP_CHINH_XAC', 'KHOP_TEN_CU_BIET_DANH'], true)) {
+                        $errors[] = 'Loại đối chiếu không hợp lệ tại dòng CSV ' . $rowNumber . '.';
+                    }
+                    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $row['checked_at'])) {
+                        $errors[] = 'Ngày đối chiếu không hợp lệ tại dòng CSV ' . $rowNumber . '.';
+                    }
+                }
+                if (count($propertyIds) !== 30 || array_keys($propertyIds) !== range(1, 30)) {
+                    $errors[] = 'CSV nguồn phải có đủ mã cơ sở liên tục từ 1 đến 30.';
+                }
+            }
+        } finally {
+            fclose($handle);
+        }
+    }
+}
+
+$expectedCounts = [
+    'facilities' => 24,
+    'users' => 511,
+    'partnerOrganizations' => 10,
+    'properties' => 30,
+    'roomTypes' => 120,
+    'roomProducts' => 180,
+    'dailyInventory' => 21600,
+    'dailyPrices' => 32400,
+    'previews' => 2000,
+    'bookings' => 2000,
+    'bookingItems' => 2500,
+    'nightPriceSnapshots' => 8000,
+    'inventoryLedgerRows' => 8000,
+    'payments' => 2000,
+    'cancellationRequests' => 200,
+    'reviews' => 800,
+    'promotions' => 60,
+    'googlePlacesMatches' => 0,
 ];
-foreach ($requiredSql as $relativePath) {
-    $path = $root . '/' . $relativePath;
-    if (!is_file($path) || filesize($path) < 100) {
-        fail($errors, 'SQL thiếu hoặc rỗng: ' . $relativePath);
+foreach ($expectedCounts as $name => $expected) {
+    $actual = $manifest['counts'][$name] ?? null;
+    if ($actual !== $expected) {
+        $errors[] = sprintf('Count %s: expected %d, got %s', $name, $expected, var_export($actual, true));
     }
 }
 
-$expectedRows = (int) $manifest['counts']['officialScheduleRows'];
-$current = validateSchedule($root . '/database/fixtures/csv/valid/official_schedule.csv', $expectedRows, $errors);
-$replacement = validateSchedule($root . '/database/fixtures/csv/valid/official_schedule_replacement.csv', $expectedRows, $errors);
-
-$changed = 0;
-foreach ($current as $code => $row) {
-    if (!isset($replacement[$code])) {
-        fail($errors, 'Replacement thiếu MaDong: ' . $code);
-        continue;
-    }
-    if ($replacement[$code] !== $row) {
-        ++$changed;
-    }
+if (($manifest['syntheticData'] ?? null) !== true) {
+    $errors[] = 'Manifest phải đánh dấu syntheticData=true.';
 }
-if ($changed !== (int) $manifest['counts']['replacementChangedRows']) {
-    fail($errors, "Replacement đổi {$changed} dòng, kỳ vọng " . $manifest['counts']['replacementChangedRows'] . '.');
-}
-
-$counts = $manifest['counts'];
-if ($counts['tables'] !== 20 || $counts['rooms'] !== 46 || $counts['activeLecturers'] !== 14) {
-    fail($errors, 'Quy mô catalog không đúng mục tiêu 20 bảng/46 phòng/14 giảng viên.');
-}
-if ($counts['courseSections'] < 50 || $counts['courseSections'] > 70) {
-    fail($errors, 'Số lớp học phần ngoài khoảng 50-70.');
-}
-if ($counts['internalScheduleRows'] < 1200 || $counts['internalScheduleRows'] > 1700) {
-    fail($errors, 'Số dòng lịch nội bộ ngoài khoảng 1.200-1.700.');
-}
-if ($counts['externalBusyRows'] < 1500 || $counts['externalBusyRows'] > 3000) {
-    fail($errors, 'Số dòng bận ngoài khoa ngoài khoảng 1.500-3.000.');
-}
-if ($counts['roomSlots'] < 6000 || $counts['roomSlots'] > 12000) {
-    fail($errors, 'Số SlotPhong ngoài khoảng 6.000-12.000.');
-}
-if ($counts['bookings'] < 200 || $counts['bookings'] > 400) {
-    fail($errors, 'Số phiếu ngoài khoảng 200-400.');
-}
-
-[$invalidHeader] = readCsvFile($root . '/database/fixtures/csv/invalid/invalid_header.csv');
-if ($invalidHeader === EXPECTED_HEADER) {
-    fail($errors, 'invalid_header.csv không còn sai header.');
-}
-
-foreach (['room_conflict.csv', 'lecturer_conflict.csv', 'class_conflict.csv'] as $fixture) {
-    [$header, $rows] = readCsvFile($root . '/database/fixtures/csv/invalid/' . $fixture);
-    if ($header !== EXPECTED_HEADER || count($rows) !== 2) {
-        fail($errors, $fixture . ' không đúng hình dạng fixture 2 dòng.');
-    }
-}
-
-[, $capacityRows] = readCsvFile($root . '/database/fixtures/csv/invalid/capacity_exceeded.csv');
-if (($capacityRows[0][10] ?? '') !== '100') {
-    fail($errors, 'capacity_exceeded.csv không chứa sĩ số 100.');
-}
-[, $assignmentRows] = readCsvFile($root . '/database/fixtures/csv/invalid/assignment_missing.csv');
-if (($assignmentRows[0][9] ?? '') !== 'GV999') {
-    fail($errors, 'assignment_missing.csv không chứa giảng viên không tồn tại.');
+if (($manifest['tableCount'] ?? null) !== 22) {
+    $errors[] = 'Manifest phải khai báo tableCount=22.';
 }
 
 if ($errors !== []) {
-    fwrite(STDERR, "Bộ dữ liệu KHÔNG hợp lệ:\n- " . implode("\n- ", $errors) . "\n");
+    fwrite(STDERR, "Dữ liệu không hợp lệ:\n- " . implode("\n- ", $errors) . "\n");
     exit(1);
 }
 
-echo "Bộ dữ liệu phát triển hợp lệ.\n";
-echo 'CSV rows                 : ' . $expectedRows . PHP_EOL;
-echo 'Replacement changed rows : ' . $changed . PHP_EOL;
-echo 'Room slots               : ' . $counts['roomSlots'] . PHP_EOL;
-echo 'Bookings                 : ' . $counts['bookings'] . PHP_EOL;
+echo "Bộ dữ liệu accommodation booking hợp lệ ở mức file/manifest.\n";
+foreach ($manifest['counts'] as $name => $count) {
+    echo str_pad((string) $name, 28) . ': ' . $count . PHP_EOL;
+}
+echo "Hãy chạy database/validation/001_integrity_checks.sql sau khi import để kiểm tra invariant trong database.\n";

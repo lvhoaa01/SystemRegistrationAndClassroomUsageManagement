@@ -1,101 +1,149 @@
-USE room_booking;
+USE hotel_booking;
 
--- Mỗi kết quả phải bằng 0.
-SELECT 'slot_bad_lich_state' AS CheckName, COUNT(*) AS Violations
-FROM SlotPhong s
-JOIN LichChinhThuc l ON l.LichChinhThucID = s.LichChinhThucID
-WHERE s.LoaiNguon = 'LICH_CHINH_THUC' AND l.TrangThai <> 'HOAT_DONG';
-
-SELECT 'slot_bad_booking_state' AS CheckName, COUNT(*) AS Violations
-FROM SlotPhong s
-JOIN PhieuDatPhong p ON p.PhieuDatPhongID = s.PhieuDatPhongID
-WHERE s.LoaiNguon = 'PHIEU_DAT_PHONG'
-  AND p.TrangThai NOT IN ('TU_DONG_XAC_NHAN', 'DA_DUYET');
-
-SELECT 'active_lich_slot_mismatch' AS CheckName, COUNT(*) AS Violations
-FROM (
-  SELECT l.LichChinhThucID,
-         l.TietKetThuc - l.TietBatDau + 1 AS ExpectedSlots,
-         COUNT(s.SoTiet) AS ActualSlots
-  FROM LichChinhThuc l
-  LEFT JOIN SlotPhong s ON s.LichChinhThucID = l.LichChinhThucID
-  WHERE l.TrangThai = 'HOAT_DONG'
-  GROUP BY l.LichChinhThucID
-  HAVING ExpectedSlots <> ActualSlots
-) mismatches;
-
-SELECT 'active_booking_slot_mismatch' AS CheckName, COUNT(*) AS Violations
-FROM (
-  SELECT p.PhieuDatPhongID,
-         (p.TietKetThuc - p.TietBatDau + 1) * COUNT(DISTINCT pp.PhongID) AS ExpectedSlots,
-         COUNT(DISTINCT CONCAT(s.PhongID, '/', s.SoTiet)) AS ActualSlots
-  FROM PhieuDatPhong p
-  JOIN PhieuDatPhongPhong pp ON pp.PhieuDatPhongID = p.PhieuDatPhongID
-  LEFT JOIN SlotPhong s ON s.PhieuDatPhongID = p.PhieuDatPhongID
-  WHERE p.TrangThai IN ('TU_DONG_XAC_NHAN', 'DA_DUYET')
-  GROUP BY p.PhieuDatPhongID
-  HAVING ExpectedSlots <> ActualSlots
-) mismatches;
-
-SELECT 'official_lecturer_overlap' AS CheckName, COUNT(*) AS Violations
-FROM LichChinhThuc a
-JOIN LichChinhThuc b
-  ON a.LichChinhThucID < b.LichChinhThucID
- AND a.GiangVienID = b.GiangVienID
- AND a.Ngay = b.Ngay
- AND a.TietBatDau <= b.TietKetThuc
- AND a.TietKetThuc >= b.TietBatDau
-WHERE a.TrangThai = 'HOAT_DONG'
-  AND b.TrangThai = 'HOAT_DONG'
-  AND a.GiangVienID IS NOT NULL;
-
-SELECT 'official_class_overlap' AS CheckName, COUNT(*) AS Violations
-FROM LichChinhThuc a
-JOIN LichChinhThuc b
-  ON a.LichChinhThucID < b.LichChinhThucID
- AND a.LopHocPhanID = b.LopHocPhanID
- AND a.Ngay = b.Ngay
- AND a.TietBatDau <= b.TietKetThuc
- AND a.TietKetThuc >= b.TietBatDau
-WHERE a.TrangThai = 'HOAT_DONG'
-  AND b.TrangThai = 'HOAT_DONG'
-  AND a.LopHocPhanID IS NOT NULL;
-
-SELECT 'booking_lecturer_overlap' AS CheckName, COUNT(*) AS Violations
-FROM PhieuDatPhong a
-JOIN PhieuDatPhong b
-  ON a.PhieuDatPhongID < b.PhieuDatPhongID
- AND a.NguoiYeuCauID = b.NguoiYeuCauID
- AND a.Ngay = b.Ngay
- AND a.TietBatDau <= b.TietKetThuc
- AND a.TietKetThuc >= b.TietBatDau
-WHERE a.TrangThai IN ('TU_DONG_XAC_NHAN', 'DA_DUYET')
-  AND b.TrangThai IN ('TU_DONG_XAC_NHAN', 'DA_DUYET');
-
-SELECT 'official_booking_lecturer_overlap' AS CheckName, COUNT(*) AS Violations
-FROM LichChinhThuc l
-JOIN PhieuDatPhong p
-  ON l.GiangVienID = p.NguoiYeuCauID
- AND l.Ngay = p.Ngay
- AND l.TietBatDau <= p.TietKetThuc
- AND l.TietKetThuc >= p.TietBatDau
-WHERE l.TrangThai = 'HOAT_DONG'
-  AND p.TrangThai IN ('TU_DONG_XAC_NHAN', 'DA_DUYET');
-
-SELECT 'active_closure_slot_overlap' AS CheckName, COUNT(*) AS Violations
-FROM PhongBiKhoa c
-JOIN SlotPhong s
-  ON s.PhongID = c.PhongID
- AND s.Ngay BETWEEN c.TuNgay AND c.DenNgay
- AND (c.TietBatDau IS NULL OR s.SoTiet BETWEEN c.TietBatDau AND c.TietKetThuc)
-WHERE c.TrangThai = 'HOAT_DONG';
-
-SELECT 'official_capacity_exceeded' AS CheckName, COUNT(*) AS Violations
-FROM LichChinhThuc l
-JOIN Phong p ON p.PhongID = l.PhongID
-WHERE l.SiSo IS NOT NULL AND l.SiSo > p.SucChua;
-
-SELECT 'booking_capacity_exceeded' AS CheckName, COUNT(*) AS Violations
-FROM PhieuDatPhongPhong pp
-JOIN Phong p ON p.PhongID = pp.PhongID
-WHERE pp.SoNguoiDuKien > p.SucChua;
+-- Mọi dòng kết quả phải có Violations = 0.
+SELECT 'schema_table_count_not_22' AS CheckName, ABS(COUNT(*) - 22) AS Violations
+FROM information_schema.tables
+WHERE table_schema = 'hotel_booking' AND table_type = 'BASE TABLE'
+UNION ALL
+SELECT 'inventory_negative_or_oversold', COUNT(*) FROM TonPhongNgay WHERE SoLuongDaGiu > TongSoLuong
+UNION ALL
+SELECT 'inventory_counter_ledger_mismatch', COUNT(*)
+FROM TonPhongNgay t
+LEFT JOIN (
+  SELECT LoaiPhongID, NgayLuuTru, COUNT(*) AS ActiveCount
+  FROM GiuTonPhongDem WHERE TrangThai = 'ACTIVE' GROUP BY LoaiPhongID, NgayLuuTru
+) l ON l.LoaiPhongID = t.LoaiPhongID AND l.NgayLuuTru = t.NgayLuuTru
+WHERE t.SoLuongDaGiu <> COALESCE(l.ActiveCount, 0)
+UNION ALL
+SELECT 'active_ledger_without_inventory', COUNT(*)
+FROM GiuTonPhongDem l
+LEFT JOIN TonPhongNgay t ON t.LoaiPhongID=l.LoaiPhongID AND t.NgayLuuTru=l.NgayLuuTru
+WHERE l.TrangThai='ACTIVE' AND t.LoaiPhongID IS NULL
+UNION ALL
+SELECT 'active_ledger_bad_booking_state', COUNT(*)
+FROM GiuTonPhongDem l
+JOIN HangMucDatCho i ON i.HangMucDatChoID=l.HangMucDatChoID
+JOIN DatCho b ON b.DatChoID=i.DatChoID
+WHERE l.TrangThai='ACTIVE' AND b.TrangThai NOT IN ('PENDING_PAYMENT','CONFIRMED')
+UNION ALL
+SELECT 'terminal_booking_has_active_ledger', COUNT(*)
+FROM GiuTonPhongDem l
+JOIN HangMucDatCho i ON i.HangMucDatChoID=l.HangMucDatChoID
+JOIN DatCho b ON b.DatChoID=i.DatChoID
+WHERE l.TrangThai='ACTIVE' AND b.TrangThai IN ('CANCELLED','PAYMENT_FAILED','NO_SHOW','COMPLETED')
+UNION ALL
+SELECT 'released_ledger_missing_release_data', COUNT(*)
+FROM GiuTonPhongDem WHERE TrangThai='RELEASED' AND (NhaLuc IS NULL OR LyDoNha IS NULL)
+UNION ALL
+SELECT 'ledger_outside_stay_or_wrong_room', COUNT(*)
+FROM GiuTonPhongDem l
+JOIN HangMucDatCho i ON i.HangMucDatChoID=l.HangMucDatChoID
+JOIN DatCho b ON b.DatChoID=i.DatChoID
+WHERE l.LoaiPhongID <> i.LoaiPhongID OR l.NgayLuuTru < b.NgayNhanPhong OR l.NgayLuuTru >= b.NgayTraPhong
+UNION ALL
+SELECT 'booking_item_property_mismatch', COUNT(*)
+FROM HangMucDatCho i
+JOIN DatCho b ON b.DatChoID=i.DatChoID
+JOIN LoaiPhong r ON r.LoaiPhongID=i.LoaiPhongID
+JOIN SanPhamPhong p ON p.SanPhamPhongID=i.SanPhamPhongID
+JOIN LoaiPhong pr ON pr.LoaiPhongID=p.LoaiPhongID
+WHERE r.CoSoLuuTruID <> b.CoSoLuuTruID OR pr.CoSoLuuTruID <> b.CoSoLuuTruID OR p.LoaiPhongID <> i.LoaiPhongID
+UNION ALL
+SELECT 'product_cross_property_reference', COUNT(*)
+FROM SanPhamPhong p
+JOIN LoaiPhong r ON r.LoaiPhongID=p.LoaiPhongID
+JOIN ChinhSachHuy c ON c.ChinhSachHuyID=p.ChinhSachHuyID
+WHERE r.CoSoLuuTruID <> c.CoSoLuuTruID
+UNION ALL
+SELECT 'booking_night_count_mismatch', COUNT(*)
+FROM HangMucDatCho i
+JOIN DatCho b ON b.DatChoID=i.DatChoID
+LEFT JOIN (SELECT HangMucDatChoID, COUNT(*) c FROM GiaDemDatCho GROUP BY HangMucDatChoID) n ON n.HangMucDatChoID=i.HangMucDatChoID
+WHERE COALESCE(n.c,0) <> DATEDIFF(b.NgayTraPhong,b.NgayNhanPhong)
+UNION ALL
+SELECT 'booking_total_mismatch', COUNT(*)
+FROM DatCho b
+LEFT JOIN (SELECT DatChoID, SUM(TongTien) s FROM HangMucDatCho GROUP BY DatChoID) i ON i.DatChoID=b.DatChoID
+WHERE b.TongTien <> COALESCE(i.s,0)
+UNION ALL
+SELECT 'booking_item_total_mismatch', COUNT(*)
+FROM HangMucDatCho i
+LEFT JOIN (SELECT HangMucDatChoID, SUM(ThanhTien) s FROM GiaDemDatCho GROUP BY HangMucDatChoID) n ON n.HangMucDatChoID=i.HangMucDatChoID
+WHERE i.TongTien <> COALESCE(n.s,0)
+UNION ALL
+SELECT 'preview_room_count_mismatch', COUNT(*)
+FROM XemTruocDatCho p
+JOIN DatCho b ON b.XemTruocDatChoID=p.XemTruocDatChoID
+LEFT JOIN (SELECT DatChoID, COUNT(*) c FROM HangMucDatCho GROUP BY DatChoID) i ON i.DatChoID=b.DatChoID
+WHERE JSON_LENGTH(p.PhanBoJSON, '$.rooms') <> COALESCE(i.c,0)
+UNION ALL
+SELECT 'booking_preview_context_mismatch', COUNT(*)
+FROM DatCho b
+JOIN XemTruocDatCho p ON p.XemTruocDatChoID=b.XemTruocDatChoID
+WHERE p.KhachHangID<>b.KhachHangID OR p.CoSoLuuTruID<>b.CoSoLuuTruID OR p.NgayNhanPhong<>b.NgayNhanPhong OR p.NgayTraPhong<>b.NgayTraPhong OR p.TongTien<>b.TongTien OR p.TrangThai<>'USED'
+UNION ALL
+SELECT 'payment_booking_mismatch', COUNT(*)
+FROM DatCho b
+LEFT JOIN ThanhToan p ON p.DatChoID=b.DatChoID
+WHERE p.ThanhToanID IS NULL OR p.TongPhaiTra<>b.TongTien OR p.ThoiDiemThanhToan<>b.ThoiDiemThanhToan
+   OR (b.ThoiDiemThanhToan='PAY_AT_PROPERTY' AND (p.TrangThai<>'NOT_TRACKED' OR p.DaThanhToan<>0 OR p.DaHoan<>0))
+   OR (b.TrangThai='PENDING_PAYMENT' AND p.TrangThai<>'PROCESSING')
+   OR (b.TrangThai='PAYMENT_FAILED' AND p.TrangThai<>'FAILED')
+   OR (b.ThoiDiemThanhToan='PAY_ONLINE' AND b.TrangThai IN ('CONFIRMED','COMPLETED','NO_SHOW','CANCELLED') AND p.TrangThai<>'PAID')
+UNION ALL
+SELECT 'cancellation_metadata_or_refund_mismatch', COUNT(*)
+FROM DatCho b
+LEFT JOIN ThanhToan p ON p.DatChoID=b.DatChoID
+WHERE (b.TrangThai='CANCELLED' AND (b.HuyIdempotencyKey IS NULL OR b.NguoiHuyID IS NULL OR b.HuyLuc IS NULL OR b.TinhHuySnapshotJSON IS NULL OR (b.ThoiDiemThanhToan='PAY_ONLINE' AND b.SoTienHoan<>p.DaHoan)))
+   OR (b.TrangThai<>'CANCELLED' AND (b.HuyIdempotencyKey IS NOT NULL OR b.NguoiHuyID IS NOT NULL OR b.HuyLuc IS NOT NULL OR b.PhiHuy<>0 OR b.SoTienHoan<>0))
+UNION ALL
+SELECT 'no_show_metadata_or_inventory_mismatch', COUNT(*)
+FROM DatCho b
+WHERE b.TrangThai='NO_SHOW' AND (b.NguoiDanhDauNoShowID IS NULL OR b.NoShowLuc IS NULL OR b.NoShowSnapshotJSON IS NULL OR EXISTS (
+  SELECT 1 FROM HangMucDatCho i JOIN GiuTonPhongDem l ON l.HangMucDatChoID=i.HangMucDatChoID
+  WHERE i.DatChoID=b.DatChoID AND l.TrangThai='ACTIVE'
+))
+UNION ALL
+SELECT 'review_not_eligible', COUNT(*)
+FROM DanhGia r
+JOIN DatCho b ON b.DatChoID=r.DatChoID
+WHERE b.TrangThai<>'COMPLETED' OR b.KhachHangID<>r.KhachHangID OR b.CoSoLuuTruID<>r.CoSoLuuTruID
+   OR DATEDIFF('2026-10-05', b.NgayTraPhong) NOT BETWEEN 0 AND 90
+UNION ALL
+SELECT 'approved_waiver_booking_not_cancelled', COUNT(*)
+FROM YeuCauHuyMienPhi w JOIN DatCho b ON b.DatChoID=w.DatChoID
+WHERE w.TrangThai='APPROVED' AND b.TrangThai<>'CANCELLED'
+UNION ALL
+SELECT 'multiple_pending_waiver', COUNT(*)
+FROM (SELECT DatChoID FROM YeuCauHuyMienPhi WHERE TrangThai='PENDING' GROUP BY DatChoID HAVING COUNT(*)>1) x
+UNION ALL
+SELECT 'expired_active_payment_hold', COUNT(*)
+FROM GiuTonPhongDem l
+JOIN HangMucDatCho i ON i.HangMucDatChoID=l.HangMucDatChoID
+JOIN DatCho b ON b.DatChoID=i.DatChoID
+WHERE l.TrangThai='ACTIVE' AND b.TrangThai='PENDING_PAYMENT' AND l.HetHanLuc <= '2026-10-05 12:00:00.000000'
+UNION ALL
+SELECT 'partner_membership_wrong_role', COUNT(*)
+FROM ThanhVienDoiTac m JOIN NguoiDung u ON u.NguoiDungID=m.NguoiDungID WHERE u.VaiTro<>'PARTNER'
+UNION ALL
+SELECT 'facility_scope_mismatch',
+  (SELECT COUNT(*) FROM CoSoTienNghi x JOIN TienNghi f ON f.TienNghiID=x.TienNghiID WHERE f.PhamVi<>'PROPERTY')
+  + (SELECT COUNT(*) FROM LoaiPhongTienNghi x JOIN TienNghi f ON f.TienNghiID=x.TienNghiID WHERE f.PhamVi<>'ROOM')
+UNION ALL
+SELECT 'property_outside_hcmc', COUNT(*) FROM CoSoLuuTru WHERE MaThanhPho<>'HCM'
+UNION ALL
+SELECT 'verified_property_missing_provenance', COUNT(*)
+FROM CoSoLuuTru
+WHERE TrangThaiDoiChieu IN ('KHOP_CHINH_XAC','KHOP_TEN_CU_BIET_DANH')
+  AND (NguonTen<>'HCMC_TOURISM_XLSX_2024' OR MaBanGhiNguon IS NULL OR TenTrongNguon IS NULL
+       OR NguonDiaChi IS NULL OR DiaChiXacMinhLuc IS NULL OR DuongDanBanDo IS NULL)
+UNION ALL
+SELECT 'google_metadata_inconsistent', COUNT(*)
+FROM CoSoLuuTru
+WHERE (GoogleMatchStatus='NOT_CHECKED' AND (GooglePlaceID IS NOT NULL OR GoogleVerifiedAt IS NOT NULL))
+   OR (GoogleMatchStatus='MATCHED' AND (GooglePlaceID IS NULL OR GoogleVerifiedAt IS NULL))
+   OR (GoogleMatchStatus IN ('AMBIGUOUS','NOT_FOUND') AND (GooglePlaceID IS NOT NULL OR GoogleVerifiedAt IS NULL))
+UNION ALL
+SELECT 'daily_rate_invalid_restriction', COUNT(*)
+FROM GiaPhongNgay
+WHERE SoDemToiThieu<1 OR SoDemToiThieu>30 OR (SoDemToiDa IS NOT NULL AND (SoDemToiDa<SoDemToiThieu OR SoDemToiDa>30));
