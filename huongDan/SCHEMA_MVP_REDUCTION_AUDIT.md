@@ -3,7 +3,7 @@
 **Ngày chốt:** 06/10/2026  
 **Schema trước:** 38 bảng  
 **Schema mục tiêu:** 22 bảng  
-**Mức giảm:** 16 bảng
+**Mức giảm:** 16 bảng (`MERGE`: 14, `REMOVE`: 2, `ADD`: 0)
 
 ## 1. Nguyên tắc chốt
 
@@ -25,7 +25,7 @@ Schema mới vẫn là mini OTA nhiều cơ sở, không phải CRUD khách sạ
 | 2 | `ToChucDoiTac` | Identity | tổ chức sở hữu nhiều cơ sở | giữ |
 | 3 | `ThanhVienDoiTac` | Identity | thành viên và ranh giới tổ chức | giữ |
 | 4 | `TienNghi` | Properties | danh mục tiện nghi có thể lọc | giữ |
-| 5 | `CoSoLuuTru` | Properties | hồ sơ, duyệt, provenance, loại cơ sở, Google Place ID, ảnh, cấu hình thuế/phí | giữ và nhận dữ liệu từ 7 bảng cũ |
+| 5 | `CoSoLuuTru` | Properties | hồ sơ, duyệt, provenance, loại cơ sở, Google Place ID, ảnh, cấu hình thuế/phí | giữ và nhận dữ liệu từ 5 bảng cũ |
 | 6 | `LoaiPhong` | Properties | sức chứa, cấu hình giường, ảnh loại phòng | giữ và nhận `AnhLoaiPhong` |
 | 7 | `CoSoTienNghi` | Properties | tiện nghi cấp cơ sở | giữ |
 | 8 | `LoaiPhongTienNghi` | Properties | tiện nghi cấp loại phòng | giữ |
@@ -48,6 +48,9 @@ Schema mới vẫn là mini OTA nhiều cơ sở, không phải CRUD khách sạ
 OLD TABLE COUNT = 38
 NEW TABLE COUNT = 22
 REDUCTION = 16 tables
+MERGED = 14 tables
+REMOVED = 2 tables
+ADDED = 0 tables
 ```
 
 ## 3. Kiểm kê 38 bảng cũ và quyết định migration
