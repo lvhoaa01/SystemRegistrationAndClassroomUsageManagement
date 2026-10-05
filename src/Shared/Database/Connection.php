@@ -1,5 +1,5 @@
 <?php
-
+// Cải thiện: áp dụng singleton
 declare(strict_types=1);
 
 namespace App\Shared\Database;
@@ -18,7 +18,7 @@ final class Connection
         $password = Env::get('DB_PASSWORD', '');
 
         return new PDO(
-            "mysql:host={$host};port={$port};dbname={$database};charset=utf8mb4",
+            "mysql:host={$host};port={$port};dbname={$database};charset=utf8mb4", // DSN
             $username,
             $password,
             [
