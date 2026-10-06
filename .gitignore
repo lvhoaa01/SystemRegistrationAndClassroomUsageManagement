@@ -12,13 +12,4 @@
 *.log
 
 /huongDan/*
-!/huongDan/README.md
-!/huongDan/DESCRIPTION_HOTEL_BOOKING_DRAFT.md
-!/huongDan/DESIGN_HOTEL_BOOKING_DRAFT.md
-!/huongDan/DFD_HOTEL_BOOKING.md
-!/huongDan/SEQUENCE_DIAGRAM_HOTEL_BOOKING.md
-!/huongDan/Quy_tac_comment_commit.txt
-!/huongDan/DOI_CHIEU_CSLT_TPHCM_GOOGLE_MAPS.md
-!/huongDan/SCHEMA_MVP_REDUCTION_AUDIT.md
-
 /scripts/*
